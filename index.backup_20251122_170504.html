@@ -1,0 +1,2526 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GSD - Sistema de Gestão Comercial</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { font-family: 'Inter', sans-serif; margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #fafafa; }
+        .sidebar-item { transition: all 0.2s; }
+        .sidebar-item:hover { background: #f0f0f0; }
+        .sidebar-item.active { background: #e8f5e9; border-left: 3px solid #4caf50; font-weight: 600; }
+        .sortable-header { cursor: pointer; user-select: none; }
+        .sortable-header:hover { background: #f5f5f5; }
+        .kanban-column { min-height: 600px; background: #f8f9fa; border-radius: 12px; padding: 16px; }
+        .contact-card { cursor: move; transition: all 0.2s; }
+        .contact-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.12); }
+        .contact-card.dragging { opacity: 0.5; }
+        .tag { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-right: 4px; }
+        .tag-urgente { background: #fee; color: #c00; }
+        .tag-vip { background: #fef3c7; color: #92400e; }
+        .tag-cold { background: #dbeafe; color: #1e40af; }
+        .tag-quente { background: #fecaca; color: #991b1b; }
+        .priority-high { border-left: 4px solid #ef4444 !important; }
+        .priority-medium { border-left: 4px solid #f59e0b !important; }
+        .priority-low { border-left: 4px solid #10b981 !important; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        .notification-badge { position: absolute; top: -8px; right: -8px; background: #ef4444; color: white; border-radius: 9999px; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const API_URL = '/api';
+        
+        const api = {
+            from: (table) => ({
+                select: async () => {
+                    const token = sessionStorage.getItem('token');
+                    const res = await fetch(API_URL + '/' + table, { headers: token ? {'Authorization': 'Bearer ' + token} : {} });
+                    return {data: res.ok ? await res.json() : []};
+                },
+                insert: async (records) => {
+                    const token = sessionStorage.getItem('token');
+                    const arr = Array.isArray(records) ? records : [records];
+                    for (const r of arr) {
+                        await fetch(API_URL + '/' + table, { method: 'POST', headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}, body: JSON.stringify(r) });
+                    }
+                },
+                update: async (id, record) => {
+                    const token = sessionStorage.getItem('token');
+                    await fetch(API_URL + '/' + table + '/' + id, { method: 'PUT', headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}, body: JSON.stringify(record) });
+                },
+                delete: async (id) => {
+                    const token = sessionStorage.getItem('token');
+                    await fetch(API_URL + '/' + table + '/' + id, { method: 'DELETE', headers: {'Authorization': 'Bearer ' + token} });
+                }
+            })
+        };
+
+        const exportToExcel = (data, filename) => {
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Dados");
+            XLSX.writeFile(wb, filename + ".xlsx");
+        };
+
+        const exportToPDF = (headers, rows, title, filename) => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            doc.setFontSize(16);
+            doc.text(title, 14, 15);
+            doc.setFontSize(10);
+            doc.text('GSD - Sistema de Gestão Comercial', 14, 22);
+            doc.text('Data: ' + new Date().toLocaleDateString('pt-BR'), 14, 28);
+            doc.autoTable({
+                startY: 35,
+                head: [headers],
+                body: rows,
+                styles: { fontSize: 8, cellPadding: 2 },
+                headStyles: { fillColor: [76, 175, 80], fontStyle: 'bold' }
+            });
+            doc.save(filename + ".pdf");
+        };
+
+        function App() {
+            // 👤 USUÁRIO LOGADO (simulado - em produção viria do backend)
+            const [usuarioLogado, setUsuarioLogado] = useState(() => {
+                const saved = localStorage.getItem('usuarioLogado');
+                console.log('🔍 Verificando usuário logado:', saved);
+                return saved ? JSON.parse(saved) : null;
+            });
+            
+            // 🔒 FUNÇÕES DE PERMISSÃO
+            const temPermissao = (permissao) => {
+                const permissoes = {
+                    'admin': ['usuarios', 'metas', 'relatorios_completos', 'clientes', 'vendas_todas', 'configuracoes'],
+                    'gerente': ['metas', 'relatorios_equipe', 'clientes', 'vendas_equipe', 'aprovar_vendas'],
+                    'vendedor': ['relatorios_proprios', 'clientes', 'vendas_proprias', 'leads_proprios']
+                };
+                return permissoes[usuarioLogado.perfil]?.includes(permissao) || false;
+            };
+            
+            const podeVerTodosDados = () => usuarioLogado && usuarioLogado.perfil === 'admin';
+            const ehVendedor = () => usuarioLogado && usuarioLogado.perfil === 'vendedor';
+
+            // const [user, setUser] = useState(null); // REMOVIDO - usando usuarioLogado
+            const [page, setPage] = useState(() => {
+                const last = localStorage.getItem('lastPage');
+                if (last) {
+                    localStorage.removeItem('lastPage');
+                    return last;
+                }
+                return 'workspace';
+            });
+            const [loading, setLoading] = useState(true);
+            const [showModal, setShowModal] = useState(null);
+            const [toast, setToast] = useState(null);
+            const [notifications, setNotifications] = useState([]);
+            const [data, setData] = useState({ usuarios: [], clientes: [], clientesFinais: [], vendedores: [], vendas: [], ligacoes: [] });
+
+            useEffect(() => {
+                const saved = localStorage.getItem('usuarioLogado');
+                if (saved) {
+                    console.log('✅ Usuário encontrado no localStorage:', JSON.parse(saved));
+                    setUsuarioLogado(JSON.parse(saved));
+                }
+                loadData();
+                
+                // Verificar notificações a cada 30 segundos
+                const interval = setInterval(checkNotifications, 30000);
+                return () => clearInterval(interval);
+            }, []);
+
+            const loadData = async () => {
+                const [u, c, cf, vd, v, l] = await Promise.all([
+                    Promise.resolve({data: JSON.parse(localStorage.getItem('usuarios') || '[{"id":1,"nome":"Administrador","email":"admin@empresa.com","perfil":"admin","ativo":true}]')}),
+                    api.from('clientes').select(), 
+                    api.from('clientes_finais').select(),
+                    api.from('vendedores').select(), 
+                    api.from('vendas').select(), 
+                    api.from('ligacoes').select()
+                ]);
+                const newData = { usuarios: u.data, clientes: c.data, clientesFinais: cf.data, vendedores: vd.data, vendas: v.data, ligacoes: l.data };
+                // Filtrar dados baseado no perfil do usuário
+                if (usuarioLogado && usuarioLogado.perfil === 'vendedor') {
+                    newData.vendas = newData.vendas.filter(v => v.vendedor_id === usuarioLogado.id);
+                    newData.ligacoes = newData.ligacoes.filter(l => l.vendedor_id === usuarioLogado.id);
+                    newData.clientesFinais = newData.clientesFinais.filter(c => c.vendedor_id === usuarioLogado.id || c.criado_por === usuarioLogado.id);
+                }
+                
+                // GERENTE vê apenas sua equipe
+                if (usuarioLogado && usuarioLogado.perfil === 'gerente') {
+                    const vendedoresDaEquipe = newData.usuarios.filter(u => u.gerente_id === usuarioLogado.id).map(u => u.id);
+                    newData.vendas = newData.vendas.filter(v => vendedoresDaEquipe.includes(v.vendedor_id));
+                    newData.ligacoes = newData.ligacoes.filter(l => vendedoresDaEquipe.includes(l.vendedor_id));
+                    newData.clientesFinais = newData.clientesFinais.filter(c => vendedoresDaEquipe.includes(c.vendedor_id) || vendedoresDaEquipe.includes(c.criado_por));
+                }
+                setData(newData);
+                setLoading(false);
+                checkNotifications(cf.data);
+            };
+
+            const checkNotifications = (contatos = data.clientesFinais) => {
+                const now = new Date();
+                const newNotifications = [];
+                
+                contatos.forEach(c => {
+                    // Verificar follow-ups pendentes
+                    if (c.proximo_followup) {
+                        const followupDate = new Date(c.proximo_followup);
+                        const diff = followupDate - now;
+                        const hoursUntil = diff / (1000 * 60 * 60);
+                        
+                        if (hoursUntil > 0 && hoursUntil < 2) {
+                            newNotifications.push({
+                                id: 'followup-' + c.id,
+                                type: 'followup',
+                                message: `Follow-up com ${c.nome} em ${Math.round(hoursUntil * 60)} minutos`,
+                                contact: c,
+                                urgent: hoursUntil < 0.5
+                            });
+                        }
+                    }
+                    
+                    // Verificar leads quentes sem interação há muito tempo
+                    if (c.status === 'interessado' || c.status === 'negociacao') {
+                        if (c.ultima_interacao) {
+                            const lastInteraction = new Date(c.ultima_interacao);
+                            const daysSince = (now - lastInteraction) / (1000 * 60 * 60 * 24);
+                            
+                            if (daysSince > 3) {
+                                newNotifications.push({
+                                    id: 'cold-' + c.id,
+                                    type: 'warning',
+                                    message: `${c.nome} está há ${Math.round(daysSince)} dias sem contato!`,
+                                    contact: c,
+                                    urgent: daysSince > 7
+                                });
+                            }
+                        }
+                    }
+                });
+                
+                setNotifications(newNotifications);
+            };
+
+            const showToast = (msg, type = 'success') => { 
+                setToast({msg, type}); 
+                setTimeout(() => setToast(null), 3000); 
+            };
+
+            const login = async (email, senha) => {
+                console.log('🔐 LOGIN CHAMADO:', email);
+                const usuarios = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                console.log('📋 Usuários:', usuarios);
+                const user = usuarios.find(u => u.email === email && u.senha === senha && u.ativo === true);
+                console.log('👤 Usuário encontrado:', user);
+                if (user) {
+                    const safeUser = {...user};
+                    delete safeUser.senha;
+                    localStorage.setItem('usuarioLogado', JSON.stringify(safeUser));
+                    console.log('✅ Login OK, recarregando...');
+                    window.location.reload();
+                    return true;
+                }
+                console.log('❌ Login falhou');
+                return false;
+            };
+
+            const addCliente = async (form) => { await api.from('clientes').insert([form]); await loadData(); setShowModal(null); showToast('Cliente adicionado!'); };
+            const editCliente = async (id, form) => { await api.from('clientes').update(id, form); await loadData(); setShowModal(null); showToast('Cliente atualizado!'); };
+            const deleteCliente = async (id) => { await api.from('clientes').delete(id); await loadData(); showToast('Cliente excluído!'); };
+            
+            const addContato = async (form) => { 
+                await api.from('clientes_finais').insert([{...form, status: 'novo', ultima_interacao: new Date().toISOString()}]); 
+                await loadData(); 
+                setShowModal(null); 
+                showToast('Lead adicionado!'); 
+            };
+            
+            const editContato = async (id, form) => { 
+                await api.from('clientes_finais').update(id, {...form, ultima_interacao: new Date().toISOString()}); 
+                await loadData(); 
+                setShowModal(null); 
+                showToast('Lead atualizado!'); 
+            };
+            
+            const deleteContato = async (id) => { await api.from('clientes_finais').delete(id); await loadData(); showToast('Lead excluído!'); };
+            
+            const addVenda = async (form) => {
+                const cliente = data.clientes.find(c => c.id === parseInt(form.cliente_id));
+                const vendedor = data.vendedores.find(v => v.id === parseInt(form.vendedor_id));
+                const comissao = parseFloat(form.valor_bruto) * (parseFloat(cliente.percentual_comissao) / 100);
+                await api.from('vendas').insert([{ cliente_id: parseInt(form.cliente_id), vendedor_id: parseInt(form.vendedor_id), valor_bruto: parseFloat(form.valor_bruto), valor_comissao: comissao, data: new Date().toISOString(), cliente_nome: cliente.nome, vendedor_nome: vendedor.nome, faturada: false }]);
+                await loadData(); setShowModal(null); showToast('Venda registrada!', 'success');
+            };
+            
+            const editVenda = async (id, form) => {
+                const cliente = data.clientes.find(c => c.id === parseInt(form.cliente_id));
+                const vendedor = data.vendedores.find(v => v.id === parseInt(form.vendedor_id));
+                const comissao = parseFloat(form.valor_bruto) * (parseFloat(cliente.percentual_comissao) / 100);
+                await api.from('vendas').update(id, { cliente_id: parseInt(form.cliente_id), vendedor_id: parseInt(form.vendedor_id), valor_bruto: parseFloat(form.valor_bruto), valor_comissao: comissao, cliente_nome: cliente.nome, vendedor_nome: vendedor.nome, faturada: form.faturada });
+                await loadData(); setShowModal(null); showToast('Venda atualizada!');
+            };
+            
+            const deleteVenda = async (id) => { await api.from('vendas').delete(id); await loadData(); showToast('Venda excluída!'); };
+
+            const saveUsuario = async (userData) => {
+                try {
+                    const usuarios = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                    
+                    if (showModal.data?.id) {
+                        // Editar usuário existente
+                        const index = usuarios.findIndex(u => u.id === showModal.data.id);
+                        if (index !== -1) {
+                            usuarios[index] = { ...usuarios[index], ...userData };
+                        }
+                        showToast('Usuário atualizado com sucesso!');
+                    } else {
+                        // Criar novo usuário
+                        const newId = usuarios.length > 0 ? Math.max(...usuarios.map(u => u.id)) + 1 : 2;
+                        usuarios.push({
+                            id: newId,
+                            ...userData,
+                            ultima_atividade: new Date().toISOString()
+                        });
+                        showToast('Usuário criado com sucesso!');
+                    }
+                    
+                    localStorage.setItem('usuarios', JSON.stringify(usuarios));
+                    loadData();
+                    setShowModal(null);
+                } catch (error) {
+                    showToast('Erro ao salvar usuário: ' + error.message, 'error');
+                }
+            };
+
+            const deleteUsuario = async (id) => {
+                try {
+                    if (window.confirm('Tem certeza que deseja excluir este usuário?')) {
+                        const usuarios = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                        const filtered = usuarios.filter(u => u.id !== id);
+                        localStorage.setItem('usuarios', JSON.stringify(filtered));
+                        showToast('Usuário excluído com sucesso!');
+                        loadData();
+                    }
+                } catch (error) {
+                    showToast('Erro ao excluir usuário: ' + error.message, 'error');
+                }
+            };
+
+            const addLigacao = async (form) => {
+                const cliente = data.clientes.find(c => c.id === parseInt(form.cliente_id));
+                const vendedor = data.vendedores.find(v => v.id === parseInt(form.vendedor_id));
+                await api.from('ligacoes').insert([{ cliente_id: parseInt(form.cliente_id), vendedor_id: parseInt(form.vendedor_id), data: new Date().toISOString(), cliente_nome: cliente.nome, vendedor_nome: vendedor.nome, status: form.status }]);
+                
+                // Atualizar última interação do contato
+                const contato = data.clientesFinais.find(c => c.cliente_primario_id === parseInt(form.cliente_id));
+                if (contato) {
+                    await api.from('clientes_finais').update(contato.id, { ultima_interacao: new Date().toISOString() });
+                }
+                
+                await loadData(); 
+                setShowModal(null); 
+                showToast('Atividade registrada!');
+            };
+            
+            const editLigacao = async (id, form) => {
+                const cliente = data.clientes.find(c => c.id === parseInt(form.cliente_id));
+                const vendedor = data.vendedores.find(v => v.id === parseInt(form.vendedor_id));
+                await api.from('ligacoes').update(id, { cliente_id: parseInt(form.cliente_id), vendedor_id: parseInt(form.vendedor_id), cliente_nome: cliente.nome, vendedor_nome: vendedor.nome, status: form.status });
+                await loadData(); setShowModal(null); showToast('Atividade atualizada!');
+            };
+            
+            const deleteLigacao = async (id) => { await api.from('ligacoes').delete(id); await loadData(); showToast('Atividade excluída!'); };
+
+            const importExcel = async (file) => {
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const json = XLSX.utils.sheet_to_json(sheet);
+                    for (const row of json) {
+                        await api.from('clientes_finais').insert([{ 
+                            nome: row.Nome || row.nome, 
+                            telefone: row.Telefone || row.telefone, 
+                            whatsapp: row.WhatsApp || row.whatsapp, 
+                            email: row.Email || row.email, 
+                            cliente_primario_id: parseInt(row.ClienteID || row.cliente_id || 1), 
+                            status: 'novo',
+                            ultima_interacao: new Date().toISOString()
+                        }]);
+                    }
+                    await loadData(); setShowModal(null); showToast('Importado ' + json.length + ' leads!');
+                };
+                reader.readAsArrayBuffer(file);
+            };
+
+            const fmt = (v) => new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format(v);
+
+            if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="w-12 h-12 border-4 border-green-500 border-t-transparent rounded-full animate-spin"></div></div>;
+            if (!usuarioLogado) return <Login onLogin={login} />;
+
+            const kpis = { 
+                faturamento: data.vendas.reduce((s, v) => s + parseFloat(v.valor_bruto || 0), 0), 
+                comissoes: data.vendas.reduce((s, v) => s + parseFloat(v.valor_comissao || 0), 0), 
+                totalLig: data.ligacoes.length, 
+                ligEfet: data.ligacoes.filter(l => l.status === 'efetivada').length, 
+                totalVendas: data.vendas.length,
+                ticketMedio: data.vendas.length > 0 ? data.vendas.reduce((s, v) => s + parseFloat(v.valor_bruto || 0), 0) / data.vendas.length : 0,
+                taxaConversao: data.ligacoes.length > 0 ? (data.vendas.length / data.ligacoes.filter(l => l.status === 'efetivada').length) * 100 : 0,
+                vendasPendentes: data.vendas.filter(v => !v.faturada).length,
+                vendasFaturadas: data.vendas.filter(v => v.faturada).length,
+                totalClientes: data.clientes.length,
+                totalContatos: data.clientesFinais.length
+            };
+
+            let menuItems = [
+                {id: 'workspace', icon: '⚡', label: 'Área de Trabalho', badge: notifications.length, perfis: ['admin', 'gerente', 'vendedor']},
+                {id: 'pipeline', icon: '🔄', label: 'Pipeline', perfis: ['admin', 'gerente', 'vendedor']},
+                {id: 'dashboard', icon: '📊', label: 'Dashboard', perfis: ['admin', 'gerente']}, 
+                {id: 'vendas', icon: '💰', label: 'Vendas', perfis: ['admin', 'gerente', 'vendedor']}, 
+                {id: 'clientes', icon: '🏢', label: 'Clientes B2B', perfis: ['admin', 'gerente', 'vendedor']}, 
+                {id: 'clientes_finais', icon: '👥', label: 'Clientes Finais', perfis: ['admin', 'gerente', 'vendedor']}, 
+                {id: 'ligacoes', icon: '📞', label: 'Atividades', perfis: ['admin', 'gerente', 'vendedor']},
+                {id: 'chat', icon: '💬', label: 'Chat', perfis: ['admin', 'gerente', 'vendedor']},
+                {id: 'usuarios', icon: '👥', label: 'Usuários', perfis: ['admin']},
+                {id: 'metas', icon: '🎯', label: 'Metas', perfis: ['admin', 'gerente']},
+                {id: 'relatorios', icon: '📊', label: 'Relatórios', perfis: ['admin', 'gerente', 'vendedor']},
+                {id: 'comissoes', icon: '💰', label: 'Comissões', perfis: ['admin', 'gerente']}
+            ];
+            
+            // Filtrar menus baseado no perfil
+            menuItems = usuarioLogado ? menuItems.filter(item => item.perfis.includes(usuarioLogado.perfil)) : [];
+
+            return (
+                <div className="flex h-screen" style={{background: '#fafafa'}}>
+                    <div className="w-64 bg-white border-r flex flex-col">
+                        <div className="p-6 border-b">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center text-white font-bold text-lg">G</div>
+                                <div><div className="font-bold text-lg">GSD</div><div style={{fontSize: '11px'}} className="text-gray-500">Gestão Comercial</div></div>
+                            </div>
+                        </div>
+                        <div className="flex-1 py-4">
+                            {menuItems.map(item => (
+                                <button key={item.id} onClick={() => setPage(item.id)} className={'sidebar-item w-full flex items-center gap-3 px-6 py-3 text-left relative ' + (page === item.id ? 'active text-green-700' : 'text-gray-700')}>
+                                    <span className="text-xl">{item.icon}</span>
+                                    <span style={{fontSize: '13px'}} className="font-medium flex-1">{item.label}</span>
+                                    {item.badge > 0 && <span className="bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold">{item.badge}</span>}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="border-t p-4">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center font-bold text-gray-700">{usuarioLogado.nome.charAt(0)}</div>
+                                <div className="flex-1"><div style={{fontSize: '13px'}} className="font-medium">{usuarioLogado.nome}</div><div style={{fontSize: '11px'}} className="text-gray-500">{usuarioLogado.perfil}</div></div>
+                                <button onClick={() => { 
+                                    // Remover apenas o usuário logado, manter a lista de usuários
+                                    localStorage.removeItem('usuarioLogado'); 
+                                    setUsuarioLogado(null); 
+                                    window.location.reload(); 
+                                }} className="text-gray-400 hover:text-gray-600">↗</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                        <div className="bg-white border-b px-8 py-4 flex items-center justify-between">
+                            <div>
+                                <h1 style={{fontSize: '22px'}} className="font-bold text-gray-900">{menuItems.find(m => m.id === page)?.label}</h1>
+                                <p style={{fontSize: '12px'}} className="text-gray-500 mt-0.5">
+                                    {page === 'workspace' && notifications.length > 0 && `${notifications.length} notificações pendentes`}
+                                    {page !== 'workspace' && 'Visão geral e métricas'}
+                                </p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <button onClick={() => {localStorage.removeItem('usuarioLogado'); window.location.reload();}} className="px-4 py-2 bg-red-100 border-2 border-red-300 rounded-lg text-red-600 font-bold text-sm">🚪 Sair</button>
+                                <div className="flex gap-3">
+                                {page === 'workspace' && <button onClick={() => setShowModal({type: 'contato'})} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2 rounded-lg font-medium text-sm transition-all">+ Novo Lead</button>}
+                                {page === 'vendas' && <button onClick={() => setShowModal({type: 'venda'})} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2 rounded-lg font-medium text-sm transition-all">+ Nova Venda</button>}
+                                {page === 'clientes' && <button onClick={() => setShowModal({type: 'cliente'})} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2 rounded-lg font-medium text-sm transition-all">+ Novo Cliente</button>}
+                                {page === 'clientes_finais' && (<><button onClick={() => setShowModal({type: 'import'})} className="bg-blue-500 hover:bg-blue-600 text-white px-5 py-2 rounded-lg font-medium text-sm transition-all">📊 Importar</button><button onClick={() => setShowModal({type: 'contato'})} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2 rounded-lg font-medium text-sm transition-all">+ Novo Contato</button></>)}
+                                {page === 'ligacoes' && <button onClick={() => setShowModal({type: 'ligacao'})} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2 rounded-lg font-medium text-sm transition-all">+ Nova Atividade</button>}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-8">
+                            {page === 'workspace' && <Workspace contatos={data.clientesFinais} clientes={data.clientes} ligacoes={data.ligacoes} vendas={data.vendas} notifications={notifications} onUpdateContact={editContato} showToast={showToast} onAddLigacao={addLigacao} onOpenDetails={(c) => setShowModal({type: 'detalhes', data: c})} />}
+                            {page === 'pipeline' && <Pipeline contatos={data.clientesFinais} clientes={data.clientes} ligacoes={data.ligacoes} vendas={data.vendas} onUpdateContact={editContato} showToast={showToast} onOpenDetails={(c) => setShowModal({type: 'detalhes', data: c})} />}
+                            {page === 'dashboard' && <Dashboard kpis={kpis} fmt={fmt} vendas={data.vendas} ligacoes={data.ligacoes} vendedores={data.vendedores} usuarioLogado={usuarioLogado} />}
+                            {page === 'vendas' && <Vendas vendas={data.vendas} vendedores={data.vendedores} clientes={data.clientes} fmt={fmt} showToast={showToast} onEdit={(v) => setShowModal({type: 'venda', data: v})} onDelete={deleteVenda} />}
+                            {page === 'clientes' && <Clientes clientes={data.clientes} showToast={showToast} onEdit={(c) => setShowModal({type: 'cliente', data: c})} onDelete={deleteCliente} />}
+                            {page === 'clientes_finais' && <Contatos contatos={data.clientesFinais} clientes={data.clientes} showToast={showToast} onEdit={(c) => setShowModal({type: 'contato', data: c})} onDelete={deleteContato} />}
+                            {page === 'ligacoes' && <Atividades ligacoes={data.ligacoes} vendedores={data.vendedores} clientes={data.clientes} showToast={showToast} onEdit={(l) => setShowModal({type: 'ligacao', data: l})} onDelete={deleteLigacao} />}
+                            {page === 'usuarios' && <Usuarios usuarios={data.usuarios} showToast={showToast} onEdit={(u) => setShowModal({type: 'usuario', data: u})} onDelete={deleteUsuario} onAdd={() => setShowModal({type: 'usuario'})} />}
+                            {page === 'metas' && <Metas vendedores={data.vendedores} vendas={data.vendas} ligacoes={data.ligacoes} showToast={showToast} usuarioLogado={usuarioLogado} />}
+                            {page === 'relatorios' && <Relatorios vendas={data.vendas} vendedores={data.vendedores} clientes={data.clientes} clientesFinais={data.clientesFinais} fmt={fmt} usuarioLogado={usuarioLogado} />}
+                            {page === 'comissoes' && <Comissoes vendas={data.vendas} vendedores={data.vendedores} fmt={fmt} showToast={showToast} usuarioLogado={usuarioLogado} />}
+                        </div>
+                    </div>
+                    
+                            {showModal?.type === 'usuario' && (
+                                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(null)}>
+                                    <div className="bg-white rounded-2xl p-6 max-w-2xl w-full" onClick={(e) => e.stopPropagation()}>
+                                        <h2 className="text-2xl font-bold mb-6">{showModal.data ? '✏️ Editar Usuário' : '➕ Novo Usuário'}</h2>
+                                        <form onSubmit={(e) => {
+                                            e.preventDefault();
+                                            const formData = new FormData(e.target);
+                                            const userData = {
+                                                nome: formData.get('nome'),
+                                                email: formData.get('email'),
+                                                telefone: formData.get('telefone'),
+                                                perfil: formData.get('perfil'),
+                                                senha: formData.get('senha'),
+                                                ativo: formData.get('ativo') === 'true'
+                                            };
+                                            saveUsuario(userData);
+                                        }}>
+                                            <div className="grid grid-cols-2 gap-4 mb-4">
+                                                <div>
+                                                    <label className="block text-sm font-medium mb-2">Nome Completo *</label>
+                                                    <input name="nome" type="text" required defaultValue={showModal.data?.nome} className="w-full px-4 py-2 border rounded-lg" placeholder="João Silva" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-medium mb-2">Email *</label>
+                                                    <input name="email" type="email" required defaultValue={showModal.data?.email} className="w-full px-4 py-2 border rounded-lg" placeholder="joao@empresa.com" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-medium mb-2">Telefone</label>
+                                                    <input name="telefone" type="text" defaultValue={showModal.data?.telefone} className="w-full px-4 py-2 border rounded-lg" placeholder="(11) 99999-9999" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-medium mb-2">Perfil *</label>
+                                                    <select name="perfil" required defaultValue={showModal.data?.perfil || 'vendedor'} className="w-full px-4 py-2 border rounded-lg">
+                                                        <option value="admin">👑 Administrador</option>
+                                                        <option value="gerente">📊 Gerente</option>
+                                                        <option value="vendedor">💼 Vendedor</option>
+                                                    </select>
+                                                </div>
+                                                {!showModal.data && (
+                                                    <div>
+                                                        <label className="block text-sm font-medium mb-2">Senha *</label>
+                                                        <input name="senha" type="password" required className="w-full px-4 py-2 border rounded-lg" placeholder="••••••••" />
+                                                    </div>
+                                                )}
+                                                <div>
+                                                    <label className="block text-sm font-medium mb-2">Status *</label>
+                                                    <select name="ativo" required defaultValue={showModal.data?.ativo !== false ? 'true' : 'false'} className="w-full px-4 py-2 border rounded-lg">
+                                                        <option value="true">✅ Ativo</option>
+                                                        <option value="false">❌ Inativo</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div className="flex gap-3">
+                                                <button type="button" onClick={() => setShowModal(null)} className="flex-1 px-6 py-3 border-2 border-gray-300 rounded-lg font-bold hover:bg-gray-50">Cancelar</button>
+                                                <button type="submit" className="flex-1 px-6 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg font-bold">💾 Salvar Usuário</button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            {showModal?.type === 'usuario' && (
+                                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(null)}>
+                                    <div className="bg-white rounded-2xl p-6 max-w-2xl w-full" onClick={(e) => e.stopPropagation()}>
+                                        <h2 className="text-2xl font-bold mb-6">{showModal.data ? '✏️ Editar Usuário' : '➕ Novo Usuário'}</h2>
+                                        <form onSubmit={(e) => {
+                                            e.preventDefault();
+                                            const formData = new FormData(e.target);
+                                            saveUsuario({
+                                                nome: formData.get('nome'),
+                                                email: formData.get('email'),
+                                                telefone: formData.get('telefone'),
+                                                perfil: formData.get('perfil'),
+                                                senha: formData.get('senha'),
+                                                ativo: formData.get('ativo') === 'true'
+                                            });
+                                        }}>
+                                            <div className="grid grid-cols-2 gap-4 mb-4">
+                                                <div><label className="block text-sm font-medium mb-2">Nome *</label><input name="nome" type="text" required defaultValue={showModal.data?.nome} className="w-full px-4 py-2 border rounded-lg" /></div>
+                                                <div><label className="block text-sm font-medium mb-2">Email *</label><input name="email" type="email" required defaultValue={showModal.data?.email} className="w-full px-4 py-2 border rounded-lg" /></div>
+                                                <div><label className="block text-sm font-medium mb-2">Telefone</label><input name="telefone" type="text" defaultValue={showModal.data?.telefone} className="w-full px-4 py-2 border rounded-lg" /></div>
+                                                <div><label className="block text-sm font-medium mb-2">Perfil *</label><select name="perfil" required defaultValue={showModal.data?.perfil || 'vendedor'} className="w-full px-4 py-2 border rounded-lg"><option value="admin">👑 Admin</option><option value="gerente">📊 Gerente</option><option value="vendedor">💼 Vendedor</option></select></div>
+                                                {!showModal.data && <div><label className="block text-sm font-medium mb-2">Senha *</label><input name="senha" type="password" required className="w-full px-4 py-2 border rounded-lg" /></div>}
+                                                <div><label className="block text-sm font-medium mb-2">Status *</label><select name="ativo" required defaultValue={showModal.data?.ativo !== false ? 'true' : 'false'} className="w-full px-4 py-2 border rounded-lg"><option value="true">✅ Ativo</option><option value="false">❌ Inativo</option></select></div>
+                                            </div>
+                                            <div className="flex gap-3"><button type="button" onClick={() => setShowModal(null)} className="flex-1 px-6 py-3 border-2 rounded-lg font-bold">Cancelar</button><button type="submit" className="flex-1 px-6 py-3 bg-green-500 text-white rounded-lg font-bold">💾 Salvar</button></div>
+                                        </form>
+                                    </div>
+                                </div>
+                            )}
+                            {toast && (
+                        <div style={{position: 'fixed', top: '20px', right: '20px', background: 'white', padding: '14px 20px', borderRadius: '10px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', borderLeft: toast.type === 'error' ? '3px solid #ef4444' : '3px solid #4caf50', fontSize: '13px'}}>
+                            <span className="font-medium">{toast.type === 'error' ? '✕' : '✓'} {toast.msg}</span>
+                        </div>
+                    )}
+                    {showModal?.type === 'cliente' && <ModalCliente data={showModal.data} onSave={(f) => showModal.data ? editCliente(showModal.data.id, f) : addCliente(f)} onClose={() => setShowModal(null)} />}
+                    {showModal?.type === 'contato' && <ModalContato data={showModal.data} clientes={data.clientes} onSave={(f) => showModal.data ? editContato(showModal.data.id, f) : addContato(f)} onClose={() => setShowModal(null)} />}
+                    {showModal?.type === 'venda' && <ModalVenda data={showModal.data} clientes={data.clientes} vendedores={data.vendedores} onSave={(f) => showModal.data ? editVenda(showModal.data.id, f) : addVenda(f)} onClose={() => setShowModal(null)} />}
+                    {showModal?.type === 'ligacao' && <ModalLigacao data={showModal.data} clientes={data.clientes} vendedores={data.vendedores} onSave={(f) => showModal.data ? editLigacao(showModal.data.id, f) : addLigacao(f)} onClose={() => setShowModal(null)} />}
+                    {showModal?.type === 'import' && <ModalImport onImport={importExcel} onClose={() => setShowModal(null)} />}
+                    {showModal?.type === 'detalhes' && <ModalDetalhes contato={showModal.data} clientes={data.clientes} ligacoes={data.ligacoes} vendas={data.vendas} onClose={() => setShowModal(null)} onSave={editContato} showToast={showToast} />}
+                    {showModal?.type === 'nota' && <ModalNota contato={showModal.data} onSave={editContato} onClose={() => setShowModal(null)} showToast={showToast} />}
+                    {showModal?.type === 'followup' && <ModalFollowup contato={showModal.data} onSave={editContato} onClose={() => setShowModal(null)} showToast={showToast} />}
+                </div>
+            );
+        }
+
+        
+        // ========================================
+        // 🔐 COMPONENTE DE AUTENTICAÇÃO (3 TELAS)
+        // ========================================
+        function AuthScreens({ onLogin }) {
+            const [tela, setTela] = React.useState('login');
+            const [email, setEmail] = React.useState('');
+            const [senha, setSenha] = React.useState('');
+            const [nome, setNome] = React.useState('');
+            const [telefone, setTelefone] = React.useState('');
+            const [erro, setErro] = React.useState('');
+            const [msg, setMsg] = React.useState('');
+            
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                const ok = await onLogin(email, senha);
+                if (!ok) setErro('Email ou senha incorretos');
+            };
+            
+            const handleRecuperarSenha = (e) => {
+                e.preventDefault();
+                let usuarios = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                if (!usuarios.find(u => u.perfil === 'admin')) {
+                    usuarios.push({id: 1, nome: 'Administrador', email: 'admin@empresa.com', senha: 'admin123', perfil: 'admin', ativo: true, aprovado: true});
+                    localStorage.setItem('usuarios', JSON.stringify(usuarios));
+                }
+                const user = usuarios.find(u => u.email === email);
+                if (user) setMsg('Sua senha é: ' + user.senha);
+                else setMsg('Email não encontrado!');
+            };
+            
+            const handleCriarConta = (e) => {
+                e.preventDefault();
+                const usuarios = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                if (usuarios.find(u => u.email === email)) {
+                    setErro('Email já cadastrado!');
+                    return;
+                }
+                const newId = usuarios.length > 0 ? Math.max(...usuarios.map(u => u.id)) + 1 : 2;
+                usuarios.push({id: newId, nome, email, telefone, senha, perfil: 'vendedor', ativo: false, aprovado: false, data_solicitacao: new Date().toISOString()});
+                localStorage.setItem('usuarios', JSON.stringify(usuarios));
+                alert('✅ Cadastro enviado!\n\nAguarde aprovação do administrador.');
+                setTela('login');
+            };
+            
+            if (tela === 'esqueci') {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+                            <div className="text-center mb-8">
+                                <div className="w-16 h-16 bg-blue-500 rounded-2xl flex items-center justify-center text-white font-bold text-2xl mx-auto mb-4">🔑</div>
+                                <h1 className="text-3xl font-bold mb-2">Recuperar Senha</h1>
+                                <p className="text-gray-600 text-sm">Digite seu email cadastrado</p>
+                            </div>
+                            <form onSubmit={handleRecuperarSenha} className="space-y-4">
+                                <div><label className="block text-xs font-medium mb-2 text-gray-700">Email</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" required /></div>
+                                {msg && <div className="bg-blue-50 text-blue-800 px-4 py-3 rounded-lg text-xs font-medium">{msg}</div>}
+                                <button type="submit" className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold hover:bg-blue-600 text-sm">📧 Recuperar Senha</button>
+                                <button type="button" onClick={() => {setTela('login'); setMsg(''); setEmail('');}} className="w-full border-2 text-gray-600 py-3 rounded-lg font-semibold hover:bg-gray-50 text-sm">← Voltar</button>
+                            </form>
+                        </div>
+                    </div>
+                );
+            }
+            
+            if (tela === 'cadastro') {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-purple-400 to-pink-600 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+                            <div className="text-center mb-8">
+                                <div className="w-16 h-16 bg-purple-500 rounded-2xl flex items-center justify-center text-white font-bold text-2xl mx-auto mb-4">✨</div>
+                                <h1 className="text-3xl font-bold mb-2">Criar Conta</h1>
+                                <p className="text-gray-600 text-sm">Solicite acesso ao sistema</p>
+                            </div>
+                            <form onSubmit={handleCriarConta} className="space-y-4">
+                                <div><label className="block text-xs font-medium mb-2 text-gray-700">Nome completo *</label><input type="text" value={nome} onChange={(e) => setNome(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" required /></div>
+                                <div><label className="block text-xs font-medium mb-2 text-gray-700">Email *</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" required /></div>
+                                <div><label className="block text-xs font-medium mb-2 text-gray-700">Telefone</label><input type="text" value={telefone} onChange={(e) => setTelefone(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" placeholder="(11) 99999-9999" /></div>
+                                <div><label className="block text-xs font-medium mb-2 text-gray-700">Senha *</label><input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" required /></div>
+                                <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg text-xs text-yellow-800">⚠️ Sua conta será analisada por um administrador</div>
+                                {erro && <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-xs font-medium">{erro}</div>}
+                                <button type="submit" className="w-full bg-purple-500 text-white py-3 rounded-lg font-semibold hover:bg-purple-600 text-sm">✅ Solicitar Acesso</button>
+                                <button type="button" onClick={() => {setTela('login'); setErro('');}} className="w-full border-2 text-gray-600 py-3 rounded-lg font-semibold hover:bg-gray-50 text-sm">← Voltar</button>
+                            </form>
+                        </div>
+                    </div>
+                );
+            }
+            
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-green-400 to-blue-500 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+                        <div className="text-center mb-8">
+                            <div className="w-16 h-16 bg-green-500 rounded-2xl flex items-center justify-center text-white font-bold text-2xl mx-auto mb-4">G</div>
+                            <h1 className="text-3xl font-bold mb-2">Bem-vindo</h1>
+                            <p className="text-gray-600 text-sm">Faça login na sua conta</p>
+                        </div>
+                        <form onSubmit={handleLogin} className="space-y-4">
+                            <div><label className="block text-xs font-medium mb-2 text-gray-700">Email</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" required /></div>
+                            <div><label className="block text-xs font-medium mb-2 text-gray-700">Senha</label><input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" required /></div>
+                            {erro && <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-xs font-medium">{erro}</div>}
+                            <button type="submit" className="w-full bg-green-500 text-white py-3 rounded-lg font-semibold hover:bg-green-600 text-sm">Entrar</button>
+                        </form>
+                        <div className="mt-4 flex gap-3">
+                            <button onClick={() => {setTela('esqueci'); setEmail(''); setErro('');}} type="button" className="flex-1 border-2 border-blue-500 text-blue-600 py-2 rounded-lg font-semibold hover:bg-blue-50 text-xs">🔑 Esqueci a senha</button>
+                            <button onClick={() => {setTela('cadastro'); setEmail(''); setSenha(''); setErro('');}} type="button" className="flex-1 border-2 border-green-500 text-green-600 py-2 rounded-lg font-semibold hover:bg-green-50 text-xs">✨ Criar conta</button>
+                        </div>
+                        <div className="mt-6 pt-6 border-t text-center">
+                            <p className="text-xs text-gray-500 mb-2">Teste:</p>
+                            <div className="bg-gray-50 rounded-lg p-3"><div className="font-mono text-xs">admin@empresa.com</div><div className="font-mono text-xs">admin123</div></div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function Login({ onLogin }) {
+            const [email, setEmail] = useState(''); 
+            const [senha, setSenha] = useState(''); 
+            const [erro, setErro] = useState('');
+            const [showModalEsqueci, setShowModalEsqueci] = useState(false);
+            const [showModalCadastro, setShowModalCadastro] = useState(false);
+            
+            return (<React.Fragment>
+                <div className="min-h-screen bg-gradient-to-br from-green-400 to-blue-500 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+                        <div className="text-center mb-8">
+                            <div className="w-16 h-16 bg-green-500 rounded-2xl flex items-center justify-center text-white font-bold text-2xl mx-auto mb-4">G</div>
+                            <h1 className="text-3xl font-bold mb-2">Bem-vindo</h1>
+                            <p className="text-gray-600 text-sm">Faça login na sua conta</p>
+                        </div>
+                        <form onSubmit={async (e) => { 
+                            e.preventDefault(); 
+                            const ok = await onLogin(email, senha); 
+                            if (!ok) setErro('Email ou senha incorretos'); 
+                        }} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-medium mb-2 text-gray-700">Email</label>
+                                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" required />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-medium mb-2 text-gray-700">Senha</label>
+                                <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} className="w-full px-4 py-3 border rounded-lg text-sm" required />
+                            </div>
+                            {erro && <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-xs font-medium">{erro}</div>}
+                            <button type="submit" className="w-full bg-green-500 text-white py-3 rounded-lg font-semibold hover:bg-green-600 text-sm">Entrar</button>
+                        </form>
+                        <div className="mt-4 flex gap-3">
+                            <button onClick={() => setShowModalEsqueci(true)} type="button" className="flex-1 border-2 border-blue-500 text-blue-600 py-2 rounded-lg font-semibold hover:bg-blue-50 text-xs">🔑 Esqueci a senha</button>
+                            <button onClick={() => setShowModalCadastro(true)} type="button" className="flex-1 border-2 border-green-500 text-green-600 py-2 rounded-lg font-semibold hover:bg-green-50 text-xs">✨ Criar conta</button>
+                        </div>
+                        <div className="mt-6 pt-6 border-t text-center">
+                            <p className="text-xs text-gray-500 mb-2">Teste:</p>
+                            <div className="bg-gray-50 rounded-lg p-3">
+                                <div className="font-mono text-xs">admin@empresa.com</div>
+                                <div className="font-mono text-xs">admin123</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                {/* MODAL: Esqueci Senha */}
+                {showModalEsqueci && (
+                    <div onClick={() => setShowModalEsqueci(false)} className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                        <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+                            <div className="flex justify-between items-center mb-6">
+                                <h2 className="text-2xl font-bold">🔑 Recuperar Senha</h2>
+                                <button onClick={() => setShowModalEsqueci(false)} className="text-gray-400 hover:text-gray-600 text-2xl">×</button>
+                            </div>
+                            <form onSubmit={(e) => {
+                                e.preventDefault();
+                                const emailRecup = e.target.emailRecup.value;
+                                let usuarios = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                                if (!usuarios.find(u => u.perfil === 'admin')) {
+                                    usuarios.push({id: 1, nome: 'Administrador', email: 'admin@empresa.com', senha: 'admin123', perfil: 'admin', ativo: true, aprovado: true});
+                                    localStorage.setItem('usuarios', JSON.stringify(usuarios));
+                                }
+                                const user = usuarios.find(u => u.email === emailRecup);
+                                if (user) {
+                                    document.getElementById('senhaResult').innerHTML = '<div style="background:#dcfce7;border:2px solid #16a34a;padding:12px;border-radius:8px;margin-top:12px"><strong>Sua senha é:</strong> ' + user.senha + '<br><small style="color:#666">(Em produção seria enviado por email)</small></div>';
+                                } else {
+                                    document.getElementById('senhaResult').innerHTML = '<div style="background:#fee;border:2px solid #f00;padding:12px;border-radius:8px;margin-top:12px;color:#c00">Email não encontrado!</div>';
+                                }
+                            }} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-2">Email cadastrado</label>
+                                    <input type="email" name="emailRecup" className="w-full px-4 py-3 border rounded-lg" required />
+                                </div>
+                                <div id="senhaResult"></div>
+                                <button type="submit" className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold hover:bg-blue-600">📧 Recuperar Senha</button>
+                            </form>
+                        </div>
+                    </div>
+                )}
+                
+                {/* MODAL: Criar Conta */}
+                {showModalCadastro && (
+                    <div onClick={() => setShowModalCadastro(false)} className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                        <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md max-h-screen overflow-y-auto">
+                            <div className="flex justify-between items-center mb-6">
+                                <h2 className="text-2xl font-bold">✨ Criar Conta</h2>
+                                <button onClick={() => setShowModalCadastro(false)} className="text-gray-400 hover:text-gray-600 text-2xl">×</button>
+                            </div>
+                            <form onSubmit={(e) => {
+                                e.preventDefault();
+                                const formData = new FormData(e.target);
+                                const nome = formData.get('nome');
+                                const email = formData.get('email');
+                                const telefone = formData.get('telefone');
+                                const senha = formData.get('senha');
+                                
+                                const usuarios = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                                if (usuarios.find(u => u.email === email)) {
+                                    document.getElementById('cadastroResult').innerHTML = '<div style="background:#fee;border:2px solid #f00;padding:12px;border-radius:8px;margin-top:12px;color:#c00">Email já cadastrado!</div>';
+                                    return;
+                                }
+                                const newId = usuarios.length > 0 ? Math.max(...usuarios.map(u => u.id)) + 1 : 2;
+                                usuarios.push({id: newId, nome, email, telefone, senha, perfil: 'vendedor', ativo: false, aprovado: false, data_solicitacao: new Date().toISOString()});
+                                localStorage.setItem('usuarios', JSON.stringify(usuarios));
+                                document.getElementById('cadastroResult').innerHTML = '<div style="background:#dcfce7;border:2px solid #16a34a;padding:12px;border-radius:8px;margin-top:12px;color:#16a34a"><strong>✅ Cadastro enviado!</strong><br><small style="color:#666">Aguarde aprovação do administrador.</small></div>';
+                            }} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium mb-2">Nome completo *</label>
+                                    <input type="text" name="nome" className="w-full px-4 py-3 border rounded-lg" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-2">Email *</label>
+                                    <input type="email" name="email" className="w-full px-4 py-3 border rounded-lg" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-2">Telefone</label>
+                                    <input type="text" name="telefone" className="w-full px-4 py-3 border rounded-lg" placeholder="(11) 99999-9999" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-2">Senha *</label>
+                                    <input type="password" name="senha" className="w-full px-4 py-3 border rounded-lg" required />
+                                </div>
+                                <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg text-sm">
+                                    ⚠️ Sua conta será analisada por um administrador
+                                </div>
+                                <div id="cadastroResult"></div>
+                                <button type="submit" className="w-full bg-purple-500 text-white py-3 rounded-lg font-semibold hover:bg-purple-600">✅ Solicitar Acesso</button>
+                            </form>
+                        </div>
+                    </div>
+                )}
+                </React.Fragment>
+            );
+        }
+
+        function Workspace({ contatos, clientes, ligacoes, vendas, notifications, onUpdateContact, showToast, onAddLigacao, onOpenDetails }) {
+    const [metaDiaria, setMetaDiaria] = React.useState(() => parseInt(localStorage.getItem('metaDiariaGlobal') || '15'));
+    
+    const calcularScoreLead = (contato) => {
+        let score = 0;
+        const agora = new Date();
+        const statusScores = {'negociacao': 40, 'interessado': 30, 'contato': 20, 'novo': 15, 'fechado': 0};
+        score += statusScores[contato.status] || 10;
+        if (contato.prioridade === 'high') score += 25;
+        else if (contato.prioridade === 'medium') score += 15;
+        else score += 5;
+        if (contato.ultima_interacao) {
+            const dias = (agora - new Date(contato.ultima_interacao)) / (1000 * 60 * 60 * 24);
+            if (dias < 1) score += 20;
+            else if (dias < 3) score += 15;
+            else if (dias < 7) score += 10;
+            else if (dias >= 7) score -= 10;
+        } else { score += 10; }
+        if (contato.proximo_followup) {
+            const horas = (new Date(contato.proximo_followup) - agora) / (1000 * 60 * 60);
+            if (horas > 0 && horas < 2) score += 25;
+            else if (horas > 0 && horas < 24) score += 15;
+        }
+        const tags = contato.tags ? JSON.parse(contato.tags) : [];
+        if (tags.includes('urgente')) score += 20;
+        if (tags.includes('vip')) score += 15;
+        if (tags.includes('quente')) score += 15;
+        return Math.min(score, 100);
+    };
+    
+    const sugerirAcao = (contato) => {
+        const agora = new Date();
+        if (contato.status === 'negociacao') return {acao: '🔥 FECHAR VENDA AGORA', cor: 'bg-red-600', urgencia: 'CRÍTICO'};
+        if (contato.proximo_followup) {
+            const horas = (new Date(contato.proximo_followup) - agora) / (1000 * 60 * 60);
+            if (horas > 0 && horas < 2) return {acao: '⏰ FOLLOW-UP AGENDADO', cor: 'bg-orange-600', urgencia: 'URGENTE'};
+        }
+        if (contato.status === 'interessado') return {acao: '📞 LIGAR HOJE', cor: 'bg-blue-600', urgencia: 'ALTA'};
+        if (contato.status === 'novo') return {acao: '🆕 PRIMEIRO CONTATO', cor: 'bg-green-600', urgencia: 'MÉDIA'};
+        return {acao: '💬 ACOMPANHAR', cor: 'bg-gray-600', urgencia: 'BAIXA'};
+    };
+    
+    const calcularProbabilidade = (contato) => {
+        let prob = 0;
+        if (contato.status === 'negociacao') prob = 75;
+        else if (contato.status === 'interessado') prob = 45;
+        else if (contato.status === 'contato') prob = 25;
+        else if (contato.status === 'novo') prob = 15;
+        const ligacoesContato = ligacoes.filter(l => l.cliente_id === contato.cliente_primario_id);
+        const efetivadas = ligacoesContato.filter(l => l.status === 'efetivada').length;
+        if (efetivadas >= 3) prob += 15;
+        else if (efetivadas >= 2) prob += 10;
+        else if (efetivadas >= 1) prob += 5;
+        return Math.min(prob, 95);
+    };
+    
+    const top5Leads = contatos
+        .filter(c => c.status !== 'fechado')
+        .map(c => ({...c, score: calcularScoreLead(c), prob: calcularProbabilidade(c), acao: sugerirAcao(c)}))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
+    
+    const hoje = new Date().toDateString();
+    const ligacoesHoje = ligacoes.filter(l => new Date(l.data).toDateString() === hoje);
+    const vendasHoje = vendas.filter(v => new Date(v.data).toDateString() === hoje);
+    const progressoMeta = (ligacoesHoje.length / metaDiaria) * 100;
+    
+    return (
+        <div className="space-y-5">
+            <div className="grid grid-cols-4 gap-4">
+                <div className="bg-white p-5 rounded-xl shadow-sm border-2">
+                    <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-gray-500 uppercase">Ligações Hoje</span>
+                        <span className="text-2xl">📞</span>
+                    </div>
+                    <div className="text-3xl font-bold text-gray-900 mb-2">{ligacoesHoje.length}</div>
+                    <div className="flex items-center gap-2">
+                        <div className="flex-1 bg-gray-200 rounded-full h-2">
+                            <div className={'h-2 rounded-full ' + (progressoMeta >= 100 ? 'bg-green-500' : 'bg-blue-500')} style={{width: Math.min(progressoMeta, 100) + '%'}}></div>
+                        </div>
+                        <span className="text-xs font-bold">{progressoMeta.toFixed(0)}%</span>
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">Meta: {metaDiaria}</div>
+                </div>
+                
+                <div className="bg-white p-5 rounded-xl shadow-sm border-2">
+                    <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-gray-500 uppercase">Efetivadas</span>
+                        <span className="text-2xl">✅</span>
+                    </div>
+                    <div className="text-3xl font-bold text-green-600 mb-2">{ligacoesHoje.filter(l => l.status === 'efetivada').length}</div>
+                    <div className="text-xs text-gray-500">
+                        {ligacoesHoje.length > 0 ? ((ligacoesHoje.filter(l => l.status === 'efetivada').length / ligacoesHoje.length) * 100).toFixed(0) : 0}% de conversão
+                    </div>
+                </div>
+                
+                <div className="bg-white p-5 rounded-xl shadow-sm border-2">
+                    <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-gray-500 uppercase">Vendas Hoje</span>
+                        <span className="text-2xl">💰</span>
+                    </div>
+                    <div className="text-3xl font-bold text-blue-600 mb-2">{vendasHoje.length}</div>
+                    <div className="text-xs text-gray-500">
+                        {new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format(vendasHoje.reduce((s, v) => s + parseFloat(v.valor_bruto || 0), 0))}
+                    </div>
+                </div>
+                
+                <div className="bg-white p-5 rounded-xl shadow-sm border-2">
+                    <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-gray-500 uppercase">Leads Quentes</span>
+                        <span className="text-2xl">🔥</span>
+                    </div>
+                    <div className="text-3xl font-bold text-orange-600 mb-2">
+                        {contatos.filter(c => c.status === 'negociacao' || c.status === 'interessado').length}
+                    </div>
+                    <div className="text-xs text-gray-500">Precisam atenção</div>
+                </div>
+            </div>
+            
+            <div>
+                <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <span>🤖</span>
+                    <span>Top 5 Leads Prioritários (IA)</span>
+                </h2>
+                <div className="grid grid-cols-3 gap-4">
+                    {top5Leads.map((lead, idx) => (
+                        <div 
+                            key={lead.id} 
+                            className={'p-5 rounded-xl shadow-xl cursor-pointer hover:scale-105 transition-all ' + 
+                                (lead.score >= 80 ? 'bg-gradient-to-br from-red-500 to-orange-500' :
+                                 lead.score >= 60 ? 'bg-gradient-to-br from-orange-400 to-yellow-400' :
+                                 'bg-gradient-to-br from-blue-500 to-purple-500')}
+                            onClick={() => onOpenDetails(lead)}
+                        >
+                            <div className="flex justify-between items-start mb-3">
+                                <div className="flex-1">
+                                    <div className="text-white font-bold text-lg mb-1">#{idx + 1} {lead.nome}</div>
+                                    <div className="text-white/80 text-xs">{clientes.find(c => c.id === lead.cliente_primario_id)?.nome || 'Sem empresa'}</div>
+                                </div>
+                                <div className="bg-white/25 backdrop-blur px-3 py-2 rounded-full">
+                                    <div className="text-white font-bold text-xl">{lead.prob}%</div>
+                                </div>
+                            </div>
+                            
+                            <div className="bg-white/20 backdrop-blur rounded-lg p-3 mb-3">
+                                <div className="text-white font-bold text-sm mb-1">{lead.acao.acao}</div>
+                                <div className="text-white/90 text-xs">Score: {lead.score}/100</div>
+                            </div>
+                            
+                            <button 
+                                onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    if(lead.telefone) window.location.href = 'tel:' + lead.telefone;
+                                    onAddLigacao({cliente_id: lead.cliente_primario_id, vendedor_id: 1, status: 'tentada'});
+                                }}
+                                className="w-full bg-white hover:bg-gray-100 text-gray-900 font-bold py-3 rounded-lg text-sm"
+                            >
+                                📞 LIGAR AGORA
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            </div>
+            
+            {notifications.length > 0 && (
+                <div className="bg-yellow-50 border-2 border-yellow-200 rounded-xl p-4">
+                    <h3 className="font-bold text-yellow-900 mb-3 flex items-center gap-2">
+                        <span>⚠️</span>
+                        <span>Alertas Inteligentes ({notifications.length})</span>
+                    </h3>
+                    <div className="space-y-2">
+                        {notifications.slice(0, 5).map(n => (
+                            <div key={n.id} className="bg-white p-3 rounded-lg flex items-center justify-between">
+                                <span className="text-sm font-medium">{n.message}</span>
+                                <button 
+                                    onClick={() => onOpenDetails(n.contact)}
+                                    className="text-xs bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded-lg font-bold"
+                                >
+                                    Ver Lead
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+        function Pipeline({ contatos, clientes, ligacoes, vendas, onUpdateContact, showToast, onOpenDetails }) {
+            const [busca, setBusca] = React.useState('');
+            const [draggedContact, setDraggedContact] = React.useState(null);
+            
+            const statusColumns = [
+                { id: 'novo', label: 'Novos Leads', color: 'bg-blue-50', borderColor: 'border-blue-300', headerBg: 'bg-blue-100', textColor: 'text-blue-700' },
+                { id: 'contato', label: 'Em Contato', color: 'bg-yellow-50', borderColor: 'border-yellow-300', headerBg: 'bg-yellow-100', textColor: 'text-yellow-700' },
+                { id: 'interessado', label: 'Interessados', color: 'bg-purple-50', borderColor: 'border-purple-300', headerBg: 'bg-purple-100', textColor: 'text-purple-700' },
+                { id: 'negociacao', label: 'Negociação', color: 'bg-orange-50', borderColor: 'border-orange-300', headerBg: 'bg-orange-100', textColor: 'text-orange-700' },
+                { id: 'fechado', label: 'Fechados', color: 'bg-green-50', borderColor: 'border-green-300', headerBg: 'bg-green-100', textColor: 'text-green-700' }
+            ];
+            
+            const filteredContatos = contatos.filter(c => !busca || c.nome.toLowerCase().includes(busca.toLowerCase()));
+            const getContactsByStatus = (status) => filteredContatos.filter(c => (c.status || 'novo') === status);
+            
+            const getColumnStats = (status) => {
+                const cts = getContactsByStatus(status);
+                const total = cts.length;
+                const valor = cts.reduce((s, c) => s + 5000, 0); // Valor estimado
+                return { total, valor };
+            };
+            
+            const handleDragStart = (e, contact) => { setDraggedContact(contact); };
+            const handleDragOver = (e) => { e.preventDefault(); };
+            const handleDrop = async (e, newStatus) => {
+                e.preventDefault();
+                if (draggedContact && draggedContact.status !== newStatus) {
+                    await onUpdateContact(draggedContact.id, { status: newStatus });
+                    showToast('Lead movido!');
+                }
+                setDraggedContact(null);
+            };
+            
+            const avatarColors = ['bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-pink-500', 'bg-yellow-500', 'bg-indigo-500', 'bg-red-500', 'bg-teal-500'];
+            
+            return (
+                <div className="space-y-4">
+                    <div className="bg-white p-4 rounded-xl shadow-sm border">
+                        <input 
+                            type="text" 
+                            placeholder="🔍 Buscar lead..." 
+                            value={busca} 
+                            onChange={(e) => setBusca(e.target.value)} 
+                            className="w-full px-4 py-3 border-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500" 
+                        />
+                    </div>
+                    
+                    <div className="grid grid-cols-5 gap-3" style={{minHeight: '700px'}}>
+                        {statusColumns.map(col => {
+                            const stats = getColumnStats(col.id);
+                            return (
+                                <div 
+                                    key={col.id} 
+                                    onDragOver={handleDragOver} 
+                                    onDrop={(e) => handleDrop(e, col.id)} 
+                                    className={'flex flex-col rounded-xl border-2 ' + col.borderColor}
+                                >
+                                    <div className={'p-3 rounded-t-xl ' + col.headerBg}>
+                                        <div className="flex items-center justify-between mb-1">
+                                            <h3 className={'text-sm font-bold ' + col.textColor}>{col.label}</h3>
+                                            <span className={'px-2 py-1 rounded-full text-xs font-bold bg-white ' + col.textColor}>{stats.total}</span>
+                                        </div>
+                                        {stats.valor > 0 && (
+                                            <div className={'text-xs font-semibold ' + col.textColor}>
+                                                {new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format(stats.valor)}
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                    <div className={'flex-1 p-2 space-y-2 ' + col.color} style={{minHeight: '600px'}}>
+                                        {getContactsByStatus(col.id).map(c => {
+                                            const empresa = clientes.find(cl => cl.id === c.cliente_primario_id);
+                                            const avatarColor = avatarColors[c.id % avatarColors.length];
+                                            const ultimaInteracao = c.ultima_interacao ? new Date(c.ultima_interacao) : null;
+                                            const diasAtras = ultimaInteracao ? Math.floor((new Date() - ultimaInteracao) / (1000 * 60 * 60 * 24)) : null;
+                                            
+                                            return (
+                                                <div 
+                                                    key={c.id} 
+                                                    draggable 
+                                                    onDragStart={(e) => handleDragStart(e, c)} 
+                                                    className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 cursor-move hover:shadow-md transition-all"
+                                                >
+                                                    <div className="flex items-start gap-2 mb-2">
+                                                        <div className={'w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold ' + avatarColor}>
+                                                            {c.nome.charAt(0).toUpperCase()}
+                                                        </div>
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="font-semibold text-sm text-gray-900 truncate">{c.nome}</div>
+                                                            <div className="text-xs text-gray-500 truncate">{empresa?.nome || 'Sem empresa'}</div>
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    <div className="text-xs font-bold text-green-600 mb-2">R$ 5.000,00</div>
+                                                    
+                                                    {diasAtras !== null && (
+                                                        <div className="text-xs text-gray-500 mb-2">
+                                                            {diasAtras === 0 ? 'Hoje' : diasAtras === 1 ? 'Ontem' : diasAtras + ' dias atrás'}
+                                                        </div>
+                                                    )}
+                                                    
+                                                    <div className="flex items-center gap-1 pt-2 border-t border-gray-100">
+                                                        <button 
+                                                            onClick={() => c.telefone && (window.location.href = 'tel:' + c.telefone)} 
+                                                            className="flex-1 p-1.5 hover:bg-gray-100 rounded text-center" 
+                                                            title="Ligar"
+                                                        >
+                                                            📞
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => c.whatsapp && window.open('https://wa.me/55' + c.whatsapp.replace(/[^0-9]/g, ''), '_blank')} 
+                                                            className="flex-1 p-1.5 hover:bg-gray-100 rounded text-center" 
+                                                            title="WhatsApp"
+                                                        >
+                                                            💬
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => onOpenDetails(c)} 
+                                                            className="flex-1 p-1.5 hover:bg-gray-100 rounded text-center" 
+                                                            title="Detalhes"
+                                                        >
+                                                            👁️
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        function Dashboard({ kpis, fmt, vendas, ligacoes, vendedores }) {
+            const [selectedKpis, setSelectedKpis] = useState(['faturamento', 'ligacoes', 'vendas', 'comissoes']);
+            const [showKpiSelector, setShowKpiSelector] = useState(false);
+            const lineRef = useRef(null); const pieRef = useRef(null); const barRef = useRef(null);
+            
+            const availableKpis = [
+                { id: 'faturamento', label: 'Faturamento Total', icon: '💰', value: fmt(kpis.faturamento), badge: '+12.5%', color: 'green' },
+                { id: 'ligacoes', label: 'Ligações', icon: '📞', value: kpis.totalLig, badge: kpis.ligEfet + '/' + kpis.totalLig, color: 'blue' },
+                { id: 'vendas', label: 'Vendas', icon: '🎯', value: kpis.totalVendas, badge: '+8.3%', color: 'purple' },
+                { id: 'comissoes', label: 'Comissões', icon: '💵', value: fmt(kpis.comissoes), badge: '+15.2%', color: 'orange' },
+                { id: 'ticketMedio', label: 'Ticket Médio', icon: '🎫', value: fmt(kpis.ticketMedio), badge: 'Média', color: 'indigo' },
+                { id: 'taxaConversao', label: 'Taxa Conversão', icon: '📈', value: kpis.taxaConversao.toFixed(1) + '%', badge: 'Meta: 30%', color: 'pink' },
+                { id: 'vendasPendentes', label: 'Vendas Pendentes', icon: '⏳', value: kpis.vendasPendentes, badge: 'Faturar', color: 'yellow' },
+                { id: 'vendasFaturadas', label: 'Vendas Faturadas', icon: '✓', value: kpis.vendasFaturadas, badge: 'Concluído', color: 'teal' },
+                { id: 'totalClientes', label: 'Total Clientes', icon: '🏢', value: kpis.totalClientes, badge: 'Ativos', color: 'cyan' },
+                { id: 'totalContatos', label: 'Total Contatos', icon: '👥', value: kpis.totalContatos, badge: 'Base', color: 'lime' }
+            ];
+
+            const toggleKpi = (kpiId) => {
+                if (selectedKpis.includes(kpiId)) {
+                    if (selectedKpis.length > 2) setSelectedKpis(selectedKpis.filter(id => id !== kpiId));
+                } else {
+                    if (selectedKpis.length < 8) setSelectedKpis([...selectedKpis, kpiId]);
+                }
+            };
+            
+            useEffect(() => {
+                if (lineRef.current) { new Chart(lineRef.current, { type: 'line', data: { labels: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'], datasets: [{ label: 'Faturamento', data: [45000, 52000, 48000, 61000, 55000, 67000, 73000, 68000, 75000, 82000, 78000, 85000], borderColor: '#4caf50', backgroundColor: 'rgba(76,175,80,0.1)', tension: 0.4, fill: true }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 10 } } } } } }); }
+                if (pieRef.current) { const vData = vendedores.map(vd => ({ nome: vd.nome, total: vendas.filter(v => v.vendedor_id === vd.id).reduce((s, v) => s + parseFloat(v.valor_bruto || 0), 0) })); new Chart(pieRef.current, { type: 'doughnut', data: { labels: vData.map(v => v.nome), datasets: [{ data: vData.map(v => v.total), backgroundColor: ['#4caf50', '#2196f3', '#ff9800', '#e91e63'] }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } } } }); }
+                if (barRef.current) { new Chart(barRef.current, { type: 'bar', data: { labels: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'], datasets: [{ label: 'Efetivadas', data: [12, 15, 18, 14, 20, 8], backgroundColor: '#4caf50' }, { label: 'Tentadas', data: [5, 8, 6, 7, 9, 3], backgroundColor: '#e0e0e0' }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { font: { size: 10 } } } }, scales: { x: { stacked: true, ticks: { font: { size: 10 } } }, y: { stacked: true, beginAtZero: true, ticks: { font: { size: 10 } } } } } }); }
+            }, [vendas, vendedores]);
+
+            const colorMap = { green: 'bg-green-100 text-green-700', blue: 'bg-blue-100 text-blue-700', purple: 'bg-purple-100 text-purple-700', orange: 'bg-orange-100 text-orange-700', indigo: 'bg-indigo-100 text-indigo-700', pink: 'bg-pink-100 text-pink-700', yellow: 'bg-yellow-100 text-yellow-700', teal: 'bg-teal-100 text-teal-700', cyan: 'bg-cyan-100 text-cyan-700', lime: 'bg-lime-100 text-lime-700' };
+
+            return (<div className="space-y-5"><div className="flex items-center justify-between"><div><h2 style={{fontSize: '14px'}} className="font-bold text-gray-900">Indicadores Principais</h2><p style={{fontSize: '11px'}} className="text-gray-500">Selecione até 8 KPIs para visualizar</p></div><button onClick={() => setShowKpiSelector(!showKpiSelector)} className="text-xs font-medium text-green-600 hover:text-green-700 bg-green-50 px-4 py-2 rounded-lg">{showKpiSelector ? '✕ Fechar' : '⚙ Personalizar KPIs'}</button></div>{showKpiSelector && (<div className="bg-white p-5 rounded-xl shadow-sm border"><div className="grid grid-cols-5 gap-3">{availableKpis.map(kpi => (<button key={kpi.id} onClick={() => toggleKpi(kpi.id)} className={'p-3 rounded-lg border-2 transition-all text-left ' + (selectedKpis.includes(kpi.id) ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-gray-300')}><div className="flex items-center justify-between mb-1"><span className="text-lg">{kpi.icon}</span>{selectedKpis.includes(kpi.id) && <span className="text-green-600 text-xs">✓</span>}</div><div style={{fontSize: '11px'}} className="font-medium text-gray-700">{kpi.label}</div></button>))}</div></div>)}<div className="grid grid-cols-4 gap-4">{selectedKpis.map(kpiId => { const kpi = availableKpis.find(k => k.id === kpiId); return (<div key={kpi.id} className="bg-white p-5 rounded-xl shadow-sm hover:shadow-md transition-all border border-gray-100"><div className="flex items-center justify-between mb-3"><div className="text-2xl">{kpi.icon}</div><div style={{fontSize: '10px'}} className={'font-semibold px-2 py-1 rounded ' + colorMap[kpi.color]}>{kpi.badge}</div></div><div style={{fontSize: '24px'}} className="font-bold text-gray-900 mb-1">{kpi.value}</div><div style={{fontSize: '11px'}} className="text-gray-500 font-medium">{kpi.label}</div></div>); })}</div><div className="grid grid-cols-3 gap-5"><div className="col-span-2 bg-white p-5 rounded-xl shadow-sm border border-gray-100"><h3 style={{fontSize: '13px'}} className="font-bold mb-4 text-gray-900">📈 Evolução de Faturamento</h3><div style={{height: '280px'}}><canvas ref={lineRef}></canvas></div></div><div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100"><h3 style={{fontSize: '13px'}} className="font-bold mb-4 text-gray-900">🥧 Vendas por Vendedor</h3><div style={{height: '280px'}}><canvas ref={pieRef}></canvas></div></div></div><div className="grid grid-cols-3 gap-5"><div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100"><h3 style={{fontSize: '13px'}} className="font-bold mb-4 text-gray-900">📊 Ligações da Semana</h3><div style={{height: '220px'}}><canvas ref={barRef}></canvas></div></div><div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100"><h3 style={{fontSize: '13px'}} className="font-bold mb-4 text-gray-900">🔥 Últimas Vendas</h3><div className="space-y-2.5">{vendas.slice(0, 4).map((v, i) => (<div key={i} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-all"><div><div style={{fontSize: '12px'}} className="font-medium text-gray-900">{v.cliente_nome}</div><div style={{fontSize: '10px'}} className="text-gray-500">{v.vendedor_nome}</div></div><div style={{fontSize: '14px'}} className="font-bold text-green-600">{fmt(v.valor_bruto)}</div></div>))}</div></div><div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100"><h3 style={{fontSize: '13px'}} className="font-bold mb-4 text-gray-900">⚡ Atividades</h3><div className="space-y-2.5">{ligacoes.slice(0, 4).map((l, i) => (<div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-all"><div className={'w-2 h-2 rounded-full ' + (l.status === 'efetivada' ? 'bg-green-500' : 'bg-gray-300')}></div><div className="flex-1"><div style={{fontSize: '12px'}} className="font-medium text-gray-900">{l.cliente_nome}</div><div style={{fontSize: '10px'}} className="text-gray-500">{l.vendedor_nome}</div></div></div>))}</div></div></div></div>);
+        }
+
+        function Vendas({ vendas, vendedores, clientes, fmt, showToast, onEdit, onDelete }) {
+            const [busca, setBusca] = useState('');
+            const [filtroVendedor, setFiltroVendedor] = useState('');
+            const [filtroCliente, setFiltroCliente] = useState('');
+            const [filtroStatus, setFiltroStatus] = useState('');
+            const [ordenacao, setOrdenacao] = useState({ campo: 'data', direcao: 'desc' });
+            const [paginaAtual, setPaginaAtual] = useState(1);
+            const itensPorPagina = 10;
+
+            let vendasFiltradas = vendas.filter(v => {
+                const buscaMatch = busca === '' || v.cliente_nome.toLowerCase().includes(busca.toLowerCase()) || v.vendedor_nome.toLowerCase().includes(busca.toLowerCase());
+                const vendedorMatch = filtroVendedor === '' || v.vendedor_id === parseInt(filtroVendedor);
+                const clienteMatch = filtroCliente === '' || v.cliente_id === parseInt(filtroCliente);
+                const statusMatch = filtroStatus === '' || (filtroStatus === 'faturada' && v.faturada) || (filtroStatus === 'pendente' && !v.faturada);
+                return buscaMatch && vendedorMatch && clienteMatch && statusMatch;
+            });
+
+            vendasFiltradas.sort((a, b) => {
+                let valA = a[ordenacao.campo];
+                let valB = b[ordenacao.campo];
+                if (ordenacao.campo === 'valor_bruto' || ordenacao.campo === 'valor_comissao') {
+                    valA = parseFloat(valA || 0);
+                    valB = parseFloat(valB || 0);
+                }
+                if (valA < valB) return ordenacao.direcao === 'asc' ? -1 : 1;
+                if (valA > valB) return ordenacao.direcao === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            const totalPaginas = Math.ceil(vendasFiltradas.length / itensPorPagina);
+            const vendasPaginadas = vendasFiltradas.slice((paginaAtual - 1) * itensPorPagina, paginaAtual * itensPorPagina);
+
+            const alternarOrdenacao = (campo) => {
+                if (ordenacao.campo === campo) {
+                    setOrdenacao({ campo, direcao: ordenacao.direcao === 'asc' ? 'desc' : 'asc' });
+                } else {
+                    setOrdenacao({ campo, direcao: 'asc' });
+                }
+            };
+
+            const limparFiltros = () => {
+                setBusca('');
+                setFiltroVendedor('');
+                setFiltroCliente('');
+                setFiltroStatus('');
+                setPaginaAtual(1);
+            };
+
+            const exportarExcel = () => {
+                const dados = vendasFiltradas.map(v => ({
+                    Cliente: v.cliente_nome,
+                    Vendedor: v.vendedor_nome,
+                    'Valor Bruto': parseFloat(v.valor_bruto),
+                    'Comissão': parseFloat(v.valor_comissao),
+                    Status: v.faturada ? 'Faturada' : 'Pendente',
+                    Data: new Date(v.data).toLocaleDateString('pt-BR')
+                }));
+                exportToExcel(dados, 'Vendas_' + new Date().toISOString().split('T')[0]);
+                showToast('Excel exportado com sucesso!');
+            };
+
+            const exportarPDF = () => {
+                const headers = ['Cliente', 'Vendedor', 'Valor', 'Status'];
+                const rows = vendasFiltradas.map(v => [
+                    v.cliente_nome,
+                    v.vendedor_nome,
+                    fmt(v.valor_bruto),
+                    v.faturada ? 'Faturada' : 'Pendente'
+                ]);
+                exportToPDF(headers, rows, 'Relatório de Vendas', 'Vendas_' + new Date().toISOString().split('T')[0]);
+                showToast('PDF exportado com sucesso!');
+            };
+
+            const handleDelete = (id) => {
+                if (window.confirm('Tem certeza que deseja excluir esta venda?')) {
+                    onDelete(id);
+                }
+            };
+
+            return (<div className="space-y-4"><div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100"><div className="grid grid-cols-6 gap-3"><input type="text" placeholder="🔍 Buscar vendas..." value={busca} onChange={(e) => setBusca(e.target.value)} style={{fontSize: '12px'}} className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent" /><select value={filtroVendedor} onChange={(e) => setFiltroVendedor(e.target.value)} style={{fontSize: '12px'}} className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"><option value="">Todos vendedores</option>{vendedores.map(v => <option key={v.id} value={v.id}>{v.nome}</option>)}</select><select value={filtroCliente} onChange={(e) => setFiltroCliente(e.target.value)} style={{fontSize: '12px'}} className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"><option value="">Todos clientes</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select><select value={filtroStatus} onChange={(e) => setFiltroStatus(e.target.value)} style={{fontSize: '12px'}} className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"><option value="">Todos status</option><option value="faturada">Faturada</option><option value="pendente">Pendente</option></select><button onClick={limparFiltros} style={{fontSize: '12px'}} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium">Limpar</button><div className="flex gap-2"><button onClick={exportarExcel} style={{fontSize: '11px'}} className="flex-1 px-3 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-medium">📊 Excel</button><button onClick={exportarPDF} style={{fontSize: '11px'}} className="flex-1 px-3 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium">📄 PDF</button></div></div><div style={{fontSize: '11px'}} className="text-gray-500 mt-2">{vendasFiltradas.length} vendas encontradas</div></div><div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden"><table className="w-full"><thead className="bg-gray-50 border-b border-gray-200"><tr><th onClick={() => alternarOrdenacao('cliente_nome')} className="sortable-header px-6 py-3 text-left" style={{fontSize: '11px'}}><div className="flex items-center gap-1 font-semibold text-gray-600 uppercase">Cliente {ordenacao.campo === 'cliente_nome' && <span>{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>}</div></th><th onClick={() => alternarOrdenacao('vendedor_nome')} className="sortable-header px-6 py-3 text-left" style={{fontSize: '11px'}}><div className="flex items-center gap-1 font-semibold text-gray-600 uppercase">Vendedor {ordenacao.campo === 'vendedor_nome' && <span>{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>}</div></th><th onClick={() => alternarOrdenacao('valor_bruto')} className="sortable-header px-6 py-3 text-right" style={{fontSize: '11px'}}><div className="flex items-center justify-end gap-1 font-semibold text-gray-600 uppercase">Valor {ordenacao.campo === 'valor_bruto' && <span>{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>}</div></th><th onClick={() => alternarOrdenacao('faturada')} className="sortable-header px-6 py-3 text-center" style={{fontSize: '11px'}}><div className="flex items-center justify-center gap-1 font-semibold text-gray-600 uppercase">Status {ordenacao.campo === 'faturada' && <span>{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>}</div></th><th className="px-6 py-3 text-center" style={{fontSize: '11px'}}><div className="font-semibold text-gray-600 uppercase">Ações</div></th></tr></thead><tbody className="divide-y divide-gray-100">{vendasPaginadas.map(v => (<tr key={v.id} className="hover:bg-gray-50"><td className="px-6 py-4"><span style={{fontSize: '13px'}} className="font-medium text-gray-900">{v.cliente_nome}</span></td><td className="px-6 py-4"><span style={{fontSize: '12px'}} className="text-gray-600">{v.vendedor_nome}</span></td><td className="px-6 py-4 text-right"><span style={{fontSize: '14px'}} className="font-bold text-green-600">{fmt(v.valor_bruto)}</span></td><td className="px-6 py-4 text-center"><span style={{fontSize: '10px'}} className={'px-3 py-1 rounded-full font-semibold ' + (v.faturada ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700')}>{v.faturada ? 'Faturada' : 'Pendente'}</span></td><td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2"><button onClick={() => onEdit(v)} style={{fontSize: '11px'}} className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded font-medium">✏️ Editar</button><button onClick={() => handleDelete(v.id)} style={{fontSize: '11px'}} className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded font-medium">🗑️ Excluir</button></div></td></tr>))}</tbody></table></div>{totalPaginas > 1 && (<div className="flex items-center justify-between bg-white p-4 rounded-xl shadow-sm border border-gray-100"><div style={{fontSize: '12px'}} className="text-gray-600">Página {paginaAtual} de {totalPaginas}</div><div className="flex gap-2">{Array.from({ length: totalPaginas }, (_, i) => i + 1).map(num => (<button key={num} onClick={() => setPaginaAtual(num)} style={{fontSize: '12px'}} className={'px-3 py-1 rounded-lg font-medium ' + (paginaAtual === num ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200')}>{num}</button>))}</div></div>)}</div>);
+        }
+
+        function Clientes({ clientes, showToast, onEdit, onDelete }) {
+    const [busca, setBusca] = React.useState('');
+    const [ordenacao, setOrdenacao] = React.useState('nome');
+    
+    // Dados do sistema (usar do localStorage temporariamente)
+    const allContatos = JSON.parse(localStorage.getItem('clientesFinais') || '[]');
+    const allVendas = JSON.parse(localStorage.getItem('vendas') || '[]');
+    
+    const clientesComStats = clientes.map(c => {
+        const contatos = allContatos.filter(cf => cf.cliente_primario_id === c.id);
+        const vendas = allVendas.filter(v => v.cliente_id === c.id);
+        const faturamento = vendas.reduce((s, v) => s + parseFloat(v.valor_bruto || 0), 0);
+        
+        return {
+            ...c,
+            totalContatos: contatos.length,
+            totalVendas: vendas.length,
+            faturamento: faturamento,
+            ultimaVenda: vendas.length > 0 ? new Date(Math.max(...vendas.map(v => new Date(v.data)))).toLocaleDateString('pt-BR') : '-'
+        };
+    });
+    
+    const clientesFiltrados = clientesComStats
+        .filter(c => !busca || c.nome.toLowerCase().includes(busca.toLowerCase()) || (c.cnpj && c.cnpj.includes(busca)))
+        .sort((a, b) => {
+            if (ordenacao === 'nome') return a.nome.localeCompare(b.nome);
+            if (ordenacao === 'contatos') return b.totalContatos - a.totalContatos;
+            if (ordenacao === 'vendas') return b.totalVendas - a.totalVendas;
+            if (ordenacao === 'faturamento') return b.faturamento - a.faturamento;
+            return 0;
+        });
+    
+    return (
+        <div className="space-y-4">
+            <div className="bg-white p-4 rounded-xl shadow-sm border">
+                <div className="flex gap-3">
+                    <input 
+                        type="text" 
+                        placeholder="🔍 Buscar empresa (nome ou CNPJ)..." 
+                        value={busca} 
+                        onChange={(e) => setBusca(e.target.value)}
+                        className="flex-1 px-4 py-2 border rounded-lg text-sm"
+                    />
+                    <select 
+                        value={ordenacao}
+                        onChange={(e) => setOrdenacao(e.target.value)}
+                        className="px-4 py-2 border rounded-lg text-sm"
+                    >
+                        <option value="nome">Ordenar: Nome</option>
+                        <option value="contatos">Ordenar: Mais Contatos</option>
+                        <option value="vendas">Ordenar: Mais Vendas</option>
+                        <option value="faturamento">Ordenar: Maior Faturamento</option>
+                    </select>
+                    <button 
+                        onClick={onEdit}
+                        className="px-6 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-medium text-sm"
+                    >
+                        + Nova Empresa
+                    </button>
+                </div>
+            </div>
+            
+            <div className="grid grid-cols-3 gap-4">
+                <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">{clientes.length}</div>
+                    <div className="text-sm opacity-90">Total de Empresas</div>
+                </div>
+                <div className="bg-gradient-to-br from-green-500 to-green-600 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">{clientesComStats.reduce((s, c) => s + c.totalContatos, 0)}</div>
+                    <div className="text-sm opacity-90">Total de Contatos</div>
+                </div>
+                <div className="bg-gradient-to-br from-purple-500 to-purple-600 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">
+                        {new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL', maximumFractionDigits: 0}).format(clientesComStats.reduce((s, c) => s + c.faturamento, 0))}
+                    </div>
+                    <div className="text-sm opacity-90">Faturamento Total</div>
+                </div>
+            </div>
+            
+            <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                <table className="w-full">
+                    <thead className="bg-gray-50 border-b">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Empresa</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Contatos</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Vendas</th>
+                            <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase">Faturamento</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Última Venda</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                        {clientesFiltrados.map(c => (
+                            <tr key={c.id} className="hover:bg-gray-50">
+                                <td className="px-6 py-4">
+                                    <div className="font-semibold text-sm">{c.nome}</div>
+                                    {c.cnpj && <div className="text-xs text-gray-500">CNPJ: {c.cnpj}</div>}
+                                </td>
+                                <td className="px-6 py-4 text-center">
+                                    <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-bold">
+                                        {c.totalContatos}
+                                    </span>
+                                </td>
+                                <td className="px-6 py-4 text-center">
+                                    <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-bold">
+                                        {c.totalVendas}
+                                    </span>
+                                </td>
+                                <td className="px-6 py-4 text-right font-bold text-sm">
+                                    {new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format(c.faturamento)}
+                                </td>
+                                <td className="px-6 py-4 text-center text-xs text-gray-600">
+                                    {c.ultimaVenda}
+                                </td>
+                                <td className="px-6 py-4 text-center">
+                                    <div className="flex gap-2 justify-center">
+                                        <button 
+                                            onClick={() => onEdit(c)} 
+                                            className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded text-xs font-medium"
+                                        >
+                                            ✏️
+                                        </button>
+                                        <button 
+                                            onClick={() => onDelete(c.id)} 
+                                            className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded text-xs font-medium"
+                                        >
+                                            🗑️
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+}
+
+        function Contatos({ contatos, clientes, showToast, onEdit, onDelete }) {
+    const [busca, setBusca] = React.useState('');
+    const [filtroEmpresa, setFiltroEmpresa] = React.useState('');
+    const [filtroStatus, setFiltroStatus] = React.useState('');
+    
+    const contatosFiltrados = contatos.filter(c => {
+        const matchBusca = !busca || c.nome.toLowerCase().includes(busca.toLowerCase()) || (c.email && c.email.toLowerCase().includes(busca.toLowerCase())) || (c.telefone && c.telefone.includes(busca));
+        const matchEmpresa = !filtroEmpresa || c.cliente_primario_id === parseInt(filtroEmpresa);
+        const matchStatus = !filtroStatus || c.status === filtroStatus;
+        return matchBusca && matchEmpresa && matchStatus;
+    });
+    
+    const statusCount = {
+        total: contatos.length,
+        novo: contatos.filter(c => c.status === 'novo').length,
+        contato: contatos.filter(c => c.status === 'contato').length,
+        interessado: contatos.filter(c => c.status === 'interessado').length,
+        negociacao: contatos.filter(c => c.status === 'negociacao').length,
+        fechado: contatos.filter(c => c.status === 'fechado').length
+    };
+    
+    return (
+        <div className="space-y-4">
+            <div className="bg-white p-4 rounded-xl shadow-sm border">
+                <div className="grid grid-cols-3 gap-3 mb-3">
+                    <input 
+                        type="text" 
+                        placeholder="🔍 Buscar contato..." 
+                        value={busca} 
+                        onChange={(e) => setBusca(e.target.value)}
+                        className="px-4 py-2 border rounded-lg text-sm"
+                    />
+                    <select 
+                        value={filtroEmpresa}
+                        onChange={(e) => setFiltroEmpresa(e.target.value)}
+                        className="px-4 py-2 border rounded-lg text-sm"
+                    >
+                        <option value="">🏢 Todas as Empresas</option>
+                        {clientes.map(c => (
+                            <option key={c.id} value={c.id}>{c.nome}</option>
+                        ))}
+                    </select>
+                    <select 
+                        value={filtroStatus}
+                        onChange={(e) => setFiltroStatus(e.target.value)}
+                        className="px-4 py-2 border rounded-lg text-sm"
+                    >
+                        <option value="">📊 Todos os Status</option>
+                        <option value="novo">🆕 Novo</option>
+                        <option value="contato">📞 Em Contato</option>
+                        <option value="interessado">⭐ Interessado</option>
+                        <option value="negociacao">💼 Negociação</option>
+                        <option value="fechado">✅ Fechado</option>
+                    </select>
+                </div>
+                <button 
+                    onClick={onEdit}
+                    className="w-full px-6 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-medium text-sm"
+                >
+                    + Novo Contato
+                </button>
+            </div>
+            
+            <div className="grid grid-cols-6 gap-3">
+                <div className="bg-white p-4 rounded-xl shadow-sm border text-center">
+                    <div className="text-2xl font-bold text-gray-900">{statusCount.total}</div>
+                    <div className="text-xs text-gray-500">Total</div>
+                </div>
+                <div className="bg-blue-50 p-4 rounded-xl border-2 border-blue-200 text-center">
+                    <div className="text-2xl font-bold text-blue-600">{statusCount.novo}</div>
+                    <div className="text-xs text-blue-600">Novos</div>
+                </div>
+                <div className="bg-yellow-50 p-4 rounded-xl border-2 border-yellow-200 text-center">
+                    <div className="text-2xl font-bold text-yellow-600">{statusCount.contato}</div>
+                    <div className="text-xs text-yellow-600">Contato</div>
+                </div>
+                <div className="bg-purple-50 p-4 rounded-xl border-2 border-purple-200 text-center">
+                    <div className="text-2xl font-bold text-purple-600">{statusCount.interessado}</div>
+                    <div className="text-xs text-purple-600">Interessados</div>
+                </div>
+                <div className="bg-orange-50 p-4 rounded-xl border-2 border-orange-200 text-center">
+                    <div className="text-2xl font-bold text-orange-600">{statusCount.negociacao}</div>
+                    <div className="text-xs text-orange-600">Negociação</div>
+                </div>
+                <div className="bg-green-50 p-4 rounded-xl border-2 border-green-200 text-center">
+                    <div className="text-2xl font-bold text-green-600">{statusCount.fechado}</div>
+                    <div className="text-xs text-green-600">Fechados</div>
+                </div>
+            </div>
+            
+            <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                <table className="w-full">
+                    <thead className="bg-gray-50 border-b">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Contato</th>
+                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Empresa</th>
+                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Telefone</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Status</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                        {contatosFiltrados.map(c => {
+                            const empresa = clientes.find(cl => cl.id === c.cliente_primario_id);
+                            const statusColors = {
+                                novo: 'bg-blue-100 text-blue-700',
+                                contato: 'bg-yellow-100 text-yellow-700',
+                                interessado: 'bg-purple-100 text-purple-700',
+                                negociacao: 'bg-orange-100 text-orange-700',
+                                fechado: 'bg-green-100 text-green-700'
+                            };
+                            
+                            return (
+                                <tr key={c.id} className="hover:bg-gray-50">
+                                    <td className="px-6 py-4">
+                                        <div className="font-semibold text-sm">{c.nome}</div>
+                                        {c.email && <div className="text-xs text-gray-500">{c.email}</div>}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm text-gray-600">
+                                        {empresa ? empresa.nome : 'Sem empresa'}
+                                    </td>
+                                    <td className="px-6 py-4 text-sm text-gray-600">
+                                        {c.telefone || '-'}
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <span className={'px-3 py-1 rounded-full text-xs font-semibold ' + (statusColors[c.status] || 'bg-gray-100 text-gray-700')}>
+                                            {c.status || 'novo'}
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <div className="flex gap-2 justify-center">
+                                            <button onClick={() => onEdit(c)} className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded text-xs font-medium">✏️</button>
+                                            <button onClick={() => onDelete(c.id)} className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded text-xs font-medium">🗑️</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+}
+
+        function Atividades({ ligacoes, vendedores, clientes, showToast, onEdit, onDelete }) {
+            const [busca, setBusca] = useState('');
+            const [filtroVendedor, setFiltroVendedor] = useState('');
+            const [filtroStatus, setFiltroStatus] = useState('');
+            const [ordenacao, setOrdenacao] = useState({ campo: 'data', direcao: 'desc' });
+
+            let ligacoesFiltradas = ligacoes.filter(l => {
+                const buscaMatch = busca === '' || l.cliente_nome.toLowerCase().includes(busca.toLowerCase()) || l.vendedor_nome.toLowerCase().includes(busca.toLowerCase());
+                const vendedorMatch = filtroVendedor === '' || l.vendedor_id === parseInt(filtroVendedor);
+                const statusMatch = filtroStatus === '' || l.status === filtroStatus;
+                return buscaMatch && vendedorMatch && statusMatch;
+            });
+
+            ligacoesFiltradas.sort((a, b) => {
+                let valA = a[ordenacao.campo];
+                let valB = b[ordenacao.campo];
+                if (valA < valB) return ordenacao.direcao === 'asc' ? -1 : 1;
+                if (valA > valB) return ordenacao.direcao === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            const alternarOrdenacao = (campo) => {
+                if (ordenacao.campo === campo) {
+                    setOrdenacao({ campo, direcao: ordenacao.direcao === 'asc' ? 'desc' : 'asc' });
+                } else {
+                    setOrdenacao({ campo, direcao: 'asc' });
+                }
+            };
+
+            const exportarExcel = () => {
+                const dados = ligacoesFiltradas.map(l => ({
+                    Cliente: l.cliente_nome,
+                    Vendedor: l.vendedor_nome,
+                    Status: l.status === 'efetivada' ? 'Efetivada' : 'Tentada',
+                    Data: new Date(l.data).toLocaleDateString('pt-BR')
+                }));
+                exportToExcel(dados, 'Atividades_' + new Date().toISOString().split('T')[0]);
+                showToast('Excel exportado com sucesso!');
+            };
+
+            const exportarPDF = () => {
+                const headers = ['Cliente', 'Vendedor', 'Status', 'Data'];
+                const rows = ligacoesFiltradas.map(l => [
+                    l.cliente_nome,
+                    l.vendedor_nome,
+                    l.status === 'efetivada' ? 'Efetivada' : 'Tentada',
+                    new Date(l.data).toLocaleDateString('pt-BR')
+                ]);
+                exportToPDF(headers, rows, 'Relatório de Atividades', 'Atividades_' + new Date().toISOString().split('T')[0]);
+                showToast('PDF exportado com sucesso!');
+            };
+
+            const handleDelete = (id) => {
+                if (window.confirm('Tem certeza que deseja excluir esta atividade?')) {
+                    onDelete(id);
+                }
+            };
+
+            return (<div className="space-y-4"><div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100"><div className="grid grid-cols-5 gap-3"><input type="text" placeholder="🔍 Buscar atividades..." value={busca} onChange={(e) => setBusca(e.target.value)} style={{fontSize: '12px'}} className="col-span-2 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent" /><select value={filtroVendedor} onChange={(e) => setFiltroVendedor(e.target.value)} style={{fontSize: '12px'}} className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"><option value="">Todos vendedores</option>{vendedores.map(v => <option key={v.id} value={v.id}>{v.nome}</option>)}</select><select value={filtroStatus} onChange={(e) => setFiltroStatus(e.target.value)} style={{fontSize: '12px'}} className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"><option value="">Todos status</option><option value="efetivada">Efetivada</option><option value="tentada">Tentada</option></select><div className="flex gap-2"><button onClick={exportarExcel} style={{fontSize: '11px'}} className="flex-1 px-3 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-medium">📊 Excel</button><button onClick={exportarPDF} style={{fontSize: '11px'}} className="flex-1 px-3 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium">📄 PDF</button></div></div><div style={{fontSize: '11px'}} className="text-gray-500 mt-2">{ligacoesFiltradas.length} atividades encontradas</div></div><div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden"><table className="w-full"><thead className="bg-gray-50 border-b border-gray-200"><tr><th onClick={() => alternarOrdenacao('cliente_nome')} className="sortable-header px-6 py-3 text-left" style={{fontSize: '11px'}}><div className="flex items-center gap-1 font-semibold text-gray-600 uppercase">Cliente {ordenacao.campo === 'cliente_nome' && <span>{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>}</div></th><th onClick={() => alternarOrdenacao('vendedor_nome')} className="sortable-header px-6 py-3 text-left" style={{fontSize: '11px'}}><div className="flex items-center gap-1 font-semibold text-gray-600 uppercase">Vendedor {ordenacao.campo === 'vendedor_nome' && <span>{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>}</div></th><th onClick={() => alternarOrdenacao('status')} className="sortable-header px-6 py-3 text-center" style={{fontSize: '11px'}}><div className="flex items-center justify-center gap-1 font-semibold text-gray-600 uppercase">Status {ordenacao.campo === 'status' && <span>{ordenacao.direcao === 'asc' ? '↑' : '↓'}</span>}</div></th><th className="px-6 py-3 text-center" style={{fontSize: '11px'}}><div className="font-semibold text-gray-600 uppercase">Ações</div></th></tr></thead><tbody className="divide-y divide-gray-100">{ligacoesFiltradas.map(l => (<tr key={l.id} className="hover:bg-gray-50"><td className="px-6 py-4"><span style={{fontSize: '13px'}} className="font-medium text-gray-900">{l.cliente_nome}</span></td><td className="px-6 py-4"><span style={{fontSize: '12px'}} className="text-gray-600">{l.vendedor_nome}</span></td><td className="px-6 py-4 text-center"><span style={{fontSize: '10px'}} className={'px-3 py-1 rounded-full font-semibold ' + (l.status === 'efetivada' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600')}>{l.status === 'efetivada' ? 'Efetivada' : 'Tentada'}</span></td><td className="px-6 py-4 text-center"><div className="flex items-center justify-center gap-2"><button onClick={() => onEdit(l)} style={{fontSize: '11px'}} className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded font-medium">✏️</button><button onClick={() => handleDelete(l.id)} style={{fontSize: '11px'}} className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded font-medium">🗑️</button></div></td></tr>))}</tbody></table></div></div>);
+        }
+
+        function ModalCliente({ data, onSave, onClose }) { 
+            const [form, setForm] = useState(data || {nome: '', cnpj: '', email: '', telefone: '', percentual_comissao: 10}); 
+            return (
+                <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}>
+                    <div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '600px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-bold mb-6">{data ? 'Editar Cliente' : 'Novo Cliente'}</h2>
+                        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Nome *</label><input value={form.nome} onChange={(e) => setForm({...form, nome: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required /></div>
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">CNPJ</label><input value={form.cnpj || ''} onChange={(e) => setForm({...form, cnpj: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" /></div>
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Email</label><input type="email" value={form.email || ''} onChange={(e) => setForm({...form, email: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" /></div>
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Telefone</label><input value={form.telefone || ''} onChange={(e) => setForm({...form, telefone: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" /></div>
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">% Comissão *</label><input type="number" step="0.1" value={form.percentual_comissao} onChange={(e) => setForm({...form, percentual_comissao: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required /></div>
+                            </div>
+                            <div className="flex gap-3 pt-4">
+                                <button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold text-sm">Salvar</button>
+                                <button type="button" onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold text-sm">Cancelar</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            ); 
+        }
+
+        function ModalContato({ data, clientes, onSave, onClose }) { 
+            const [form, setForm] = useState(data || {nome: '', telefone: '', whatsapp: '', email: '', cliente_primario_id: '', prioridade: 'medium', tags: '[]'}); 
+            const [selectedTags, setSelectedTags] = useState(data?.tags ? JSON.parse(data.tags) : []);
+            
+            const availableTags = ['urgente', 'vip', 'cold', 'quente'];
+            
+            const toggleTag = (tag) => {
+                const newTags = selectedTags.includes(tag) 
+                    ? selectedTags.filter(t => t !== tag)
+                    : [...selectedTags, tag];
+                setSelectedTags(newTags);
+                setForm({...form, tags: JSON.stringify(newTags)});
+            };
+            
+            return (
+                <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}>
+                    <div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '600px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-bold mb-6">{data ? 'Editar Lead' : 'Novo Lead'}</h2>
+                        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Nome *</label><input value={form.nome} onChange={(e) => setForm({...form, nome: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required /></div>
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Cliente *</label><select value={form.cliente_primario_id} onChange={(e) => setForm({...form, cliente_primario_id: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select></div>
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Telefone</label><input value={form.telefone || ''} onChange={(e) => setForm({...form, telefone: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" /></div>
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">WhatsApp</label><input value={form.whatsapp || ''} onChange={(e) => setForm({...form, whatsapp: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" /></div>
+                                <div className="col-span-2"><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Email</label><input type="email" value={form.email || ''} onChange={(e) => setForm({...form, email: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" /></div>
+                                <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Prioridade</label><select value={form.prioridade || 'medium'} onChange={(e) => setForm({...form, prioridade: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg"><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option></select></div>
+                                <div className="col-span-2">
+                                    <label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Tags</label>
+                                    <div className="flex gap-2">
+                                        {availableTags.map(tag => (
+                                            <button
+                                                key={tag}
+                                                type="button"
+                                                onClick={() => toggleTag(tag)}
+                                                className={'px-3 py-2 rounded-lg text-xs font-semibold transition-all ' + (selectedTags.includes(tag) ? 'tag tag-' + tag : 'bg-gray-100 text-gray-600')}
+                                            >
+                                                {tag.toUpperCase()}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex gap-3 pt-4">
+                                <button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold text-sm">Salvar</button>
+                                <button type="button" onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold text-sm">Cancelar</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            ); 
+        }
+
+        function ModalVenda({ data, clientes, vendedores, onSave, onClose }) { 
+            const [form, setForm] = useState(data || {cliente_id: '', vendedor_id: '', valor_bruto: '', faturada: false}); 
+            return (
+                <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}>
+                    <div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '500px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-bold mb-6">{data ? 'Editar Venda' : 'Nova Venda'}</h2>
+                        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4">
+                            <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Cliente *</label><select value={form.cliente_id} onChange={(e) => setForm({...form, cliente_id: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select></div>
+                            <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Vendedor *</label><select value={form.vendedor_id} onChange={(e) => setForm({...form, vendedor_id: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{vendedores.map(v => <option key={v.id} value={v.id}>{v.nome}</option>)}</select></div>
+                            <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Valor *</label><input type="number" step="0.01" value={form.valor_bruto} onChange={(e) => setForm({...form, valor_bruto: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required /></div>
+                            {data && <div className="flex items-center gap-2"><input type="checkbox" checked={form.faturada} onChange={(e) => setForm({...form, faturada: e.target.checked})} id="faturada" className="w-4 h-4" /><label htmlFor="faturada" style={{fontSize: '12px'}} className="font-medium text-gray-700">Venda Faturada</label></div>}
+                            <div className="flex gap-3 pt-4">
+                                <button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold text-sm">Salvar</button>
+                                <button type="button" onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold text-sm">Cancelar</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            ); 
+        }
+
+        function ModalLigacao({ data, clientes, vendedores, onSave, onClose }) { 
+            const [form, setForm] = useState(data || {cliente_id: '', vendedor_id: '', status: 'tentada'}); 
+            return (
+                <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}>
+                    <div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '500px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-bold mb-6">{data ? 'Editar Atividade' : 'Nova Atividade'}</h2>
+                        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4">
+                            <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Cliente *</label><select value={form.cliente_id} onChange={(e) => setForm({...form, cliente_id: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select></div>
+                            <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Vendedor *</label><select value={form.vendedor_id} onChange={(e) => setForm({...form, vendedor_id: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{vendedores.map(v => <option key={v.id} value={v.id}>{v.nome}</option>)}</select></div>
+                            <div><label style={{fontSize: '11px'}} className="block font-medium mb-2 text-gray-700">Status *</label><select value={form.status} onChange={(e) => setForm({...form, status: e.target.value})} style={{fontSize: '13px'}} className="w-full px-4 py-2.5 border rounded-lg"><option value="tentada">Tentada</option><option value="efetivada">Efetivada</option></select></div>
+                            <div className="flex gap-3 pt-4">
+                                <button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold text-sm">Salvar</button>
+                                <button type="button" onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold text-sm">Cancelar</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            ); 
+        }
+
+        function ModalImport({ onImport, onClose }) { 
+            const [file, setFile] = useState(null); 
+            return (
+                <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}>
+                    <div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '400px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-bold mb-6">Importar Excel</h2>
+                        <div className="border-4 border-dashed border-gray-300 rounded-xl p-12 text-center hover:border-green-500 cursor-pointer" onClick={() => document.getElementById('fileInput').click()}>
+                            <input type="file" accept=".xlsx,.xls" onChange={(e) => setFile(e.target.files[0])} className="hidden" id="fileInput" />
+                            <div className="text-5xl mb-4">📊</div>
+                            <div style={{fontSize: '12px'}} className="text-gray-600 mb-2">Clique para selecionar</div>
+                            {file && <div style={{fontSize: '11px'}} className="font-semibold text-green-600 mt-3">{file.name}</div>}
+                        </div>
+                        <div className="flex gap-3 mt-6">
+                            <button onClick={() => { if(file) onImport(file); }} disabled={!file} className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white py-3 rounded-lg font-semibold text-sm">Importar</button>
+                            <button onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold text-sm">Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            ); 
+        }
+
+        function ModalDetalhes({ contato, clientes, ligacoes, vendas, onClose, onSave, showToast }) {
+            const [editMode, setEditMode] = useState(false);
+            const [form, setForm] = useState(contato);
+            const [novaAnotacao, setNovaAnotacao] = useState('');
+            
+            const cliente = clientes.find(c => c.id === contato.cliente_primario_id);
+            const historicoLigacoes = ligacoes.filter(l => l.cliente_id === contato.cliente_primario_id);
+            const historicoVendas = vendas.filter(v => v.cliente_id === contato.cliente_primario_id);
+            
+            const adicionarNota = async () => {
+                if (novaAnotacao.trim()) {
+                    const notasAtuais = contato.notas || '';
+                    const novasNotas = notasAtuais ? notasAtuais + '\n---\n' + new Date().toLocaleString('pt-BR') + ':\n' + novaAnotacao : new Date().toLocaleString('pt-BR') + ':\n' + novaAnotacao;
+                    await onSave(contato.id, {...contato, notas: novasNotas});
+                    showToast('Nota adicionada!');
+                    setNovaAnotacao('');
+                }
+            };
+            
+            const salvarFollowup = async (data) => {
+                await onSave(contato.id, {...contato, proximo_followup: data});
+                showToast('Follow-up agendado!');
+            };
+            
+            return (
+                <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}>
+                    <div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '800px', width: '100%', margin: '16px', maxHeight: '90vh', overflowY: 'auto'}} onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-xl font-bold">Detalhes do Lead</h2>
+                            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl">×</button>
+                        </div>
+                        
+                        <div className="space-y-6">
+                            {/* Cabeçalho */}
+                            <div className="flex items-center gap-4 pb-4 border-b">
+                                <div className="w-16 h-16 bg-gradient-to-br from-green-400 to-blue-500 rounded-full flex items-center justify-center text-white font-bold text-2xl">
+                                    {contato.nome.charAt(0)}
+                                </div>
+                                <div className="flex-1">
+                                    <div className="text-2xl font-bold">{contato.nome}</div>
+                                    <div className="text-gray-500">{cliente?.nome || 'Sem empresa'}</div>
+                                    {contato.tags && JSON.parse(contato.tags).length > 0 && (
+                                        <div className="flex gap-1 mt-2">
+                                            {JSON.parse(contato.tags).map(tag => (
+                                                <span key={tag} className={'tag tag-' + tag}>{tag}</span>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="text-right">
+                                    <div className={'px-4 py-2 rounded-lg font-bold text-sm ' + (contato.prioridade === 'high' ? 'bg-red-100 text-red-700' : contato.prioridade === 'low' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700')}>
+                                        {contato.prioridade === 'high' ? '🔴 Alta' : contato.prioridade === 'low' ? '🟢 Baixa' : '🟡 Média'}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            {/* Informações de Contato */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="bg-gray-50 p-4 rounded-lg">
+                                    <div className="text-xs text-gray-500 mb-1">📞 Telefone</div>
+                                    <div className="font-semibold">{contato.telefone || '-'}</div>
+                                    {contato.telefone && (
+                                        <button onClick={() => window.location.href = `tel:${contato.telefone}`} className="mt-2 text-xs bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded-lg">
+                                            Ligar Agora
+                                        </button>
+                                    )}
+                                </div>
+                                <div className="bg-gray-50 p-4 rounded-lg">
+                                    <div className="text-xs text-gray-500 mb-1">💬 WhatsApp</div>
+                                    <div className="font-semibold">{contato.whatsapp || '-'}</div>
+                                    {contato.whatsapp && (
+                                        <button onClick={() => window.open(`https://wa.me/55${contato.whatsapp.replace(/\D/g, '')}`, '_blank')} className="mt-2 text-xs bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-lg">
+                                            Abrir WhatsApp
+                                        </button>
+                                    )}
+                                </div>
+                                <div className="bg-gray-50 p-4 rounded-lg col-span-2">
+                                    <div className="text-xs text-gray-500 mb-1">📧 Email</div>
+                                    <div className="font-semibold">{contato.email || '-'}</div>
+                                    {contato.email && (
+                                        <button onClick={() => window.location.href = `mailto:${contato.email}`} className="mt-2 text-xs bg-purple-500 hover:bg-purple-600 text-white px-3 py-1 rounded-lg">
+                                            Enviar Email
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                            
+                            {/* Follow-up */}
+                            <div className="bg-blue-50 p-4 rounded-lg">
+                                <div className="font-bold mb-2">⏰ Próximo Follow-up</div>
+                                {contato.proximo_followup ? (
+                                    <div className="flex items-center justify-between">
+                                        <span className="font-semibold">{new Date(contato.proximo_followup).toLocaleString('pt-BR')}</span>
+                                        <button onClick={() => salvarFollowup(null)} className="text-xs text-red-600 hover:underline">Cancelar</button>
+                                    </div>
+                                ) : (
+                                    <div className="flex gap-2">
+                                        <input 
+                                            type="datetime-local" 
+                                            className="flex-1 px-3 py-2 border rounded-lg text-sm"
+                                            onChange={(e) => salvarFollowup(e.target.value)}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                            
+                            {/* Notas Rápidas */}
+                            <div className="bg-yellow-50 p-4 rounded-lg">
+                                <div className="font-bold mb-2">📝 Notas</div>
+                                {contato.notas && (
+                                    <div className="bg-white p-3 rounded-lg mb-3 text-sm whitespace-pre-wrap max-h-40 overflow-y-auto">
+                                        {contato.notas}
+                                    </div>
+                                )}
+                                <div className="flex gap-2">
+                                    <input 
+                                        type="text" 
+                                        placeholder="Adicionar nota rápida..."
+                                        value={novaAnotacao}
+                                        onChange={(e) => setNovaAnotacao(e.target.value)}
+                                        onKeyPress={(e) => e.key === 'Enter' && adicionarNota()}
+                                        className="flex-1 px-3 py-2 border rounded-lg text-sm"
+                                    />
+                                    <button onClick={adicionarNota} className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium">
+                                        Adicionar
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            {/* Histórico */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <h3 className="font-bold mb-3">📞 Histórico de Ligações</h3>
+                                    <div className="space-y-2 max-h-60 overflow-y-auto">
+                                        {historicoLigacoes.length > 0 ? historicoLigacoes.map((l, i) => (
+                                            <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                                                <div className={'w-2 h-2 rounded-full ' + (l.status === 'efetivada' ? 'bg-green-500' : 'bg-gray-300')}></div>
+                                                <div className="flex-1">
+                                                    <div className="text-sm font-medium">{l.status === 'efetivada' ? 'Efetivada' : 'Tentada'}</div>
+                                                    <div className="text-xs text-gray-500">{new Date(l.data).toLocaleDateString('pt-BR')}</div>
+                                                </div>
+                                            </div>
+                                        )) : <div className="text-sm text-gray-500 text-center py-4">Nenhuma ligação registrada</div>}
+                                    </div>
+                                </div>
+                                <div>
+                                    <h3 className="font-bold mb-3">💰 Histórico de Vendas</h3>
+                                    <div className="space-y-2 max-h-60 overflow-y-auto">
+                                        {historicoVendas.length > 0 ? historicoVendas.map((v, i) => (
+                                            <div key={i} className="p-3 bg-gray-50 rounded-lg">
+                                                <div className="flex justify-between items-start">
+                                                    <div className="text-sm font-medium">{v.vendedor_nome}</div>
+                                                    <div className="text-sm font-bold text-green-600">
+                                                        {new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format(v.valor_bruto)}
+                                                    </div>
+                                                </div>
+                                                <div className="text-xs text-gray-500 mt-1">{new Date(v.data).toLocaleDateString('pt-BR')}</div>
+                                            </div>
+                                        )) : <div className="text-sm text-gray-500 text-center py-4">Nenhuma venda registrada</div>}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            {/* Última Interação */}
+                            {contato.ultima_interacao && (
+                                <div className="bg-gray-50 p-3 rounded-lg text-sm text-gray-600">
+                                    <strong>Última interação:</strong> {new Date(contato.ultima_interacao).toLocaleString('pt-BR')}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function ModalNota({ contato, onSave, onClose, showToast }) {
+            const [nota, setNota] = useState('');
+            return (
+                <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}>
+                    <div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '500px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-bold mb-6">Adicionar Nota</h2>
+                        <textarea 
+                            value={nota} 
+                            onChange={(e) => setNota(e.target.value)}
+                            placeholder="Digite sua nota aqui..."
+                            className="w-full px-4 py-3 border rounded-lg text-sm h-32 resize-none"
+                        />
+                        <div className="flex gap-3 mt-4">
+                            <button 
+                                onClick={() => {
+                                    const notasAtuais = contato.notas || '';
+                                    const novasNotas = notasAtuais ? notasAtuais + '\n' + nota : nota;
+                                    onSave(contato.id, {...contato, notas: novasNotas});
+                                    onClose();
+                                }}
+                                className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold text-sm"
+                            >
+                                Salvar
+                            </button>
+                            <button onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold text-sm">Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function ModalFollowup({ contato, onSave, onClose, showToast }) {
+            const [dataHora, setDataHora] = useState('');
+            return (
+                <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}>
+                    <div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '400px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-bold mb-6">Agendar Follow-up</h2>
+                        <div className="mb-4">
+                            <label className="block text-sm font-medium mb-2">Data e Hora</label>
+                            <input 
+                                type="datetime-local" 
+                                value={dataHora}
+                                onChange={(e) => setDataHora(e.target.value)}
+                                className="w-full px-4 py-3 border rounded-lg text-sm"
+                            />
+                        </div>
+                        <div className="flex gap-3">
+                            <button 
+                                onClick={() => {
+                                    onSave(contato.id, {...contato, proximo_followup: dataHora});
+                                    onClose();
+                                }}
+                                disabled={!dataHora}
+                                className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white py-3 rounded-lg font-semibold text-sm"
+                            >
+                                Agendar
+                            </button>
+                            <button onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold text-sm">Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        
+// ========================================
+// 👥 COMPONENTE USUÁRIOS
+// ========================================
+function Usuarios({ usuarios, showToast, onEdit, onDelete, onAdd }) {
+    const [busca, setBusca] = React.useState('');
+    const [filtroPerfil, setFiltroPerfil] = React.useState('');
+    const [filtroStatus, setFiltroStatus] = React.useState('');
+    const [ordenacao, setOrdenacao] = React.useState('nome');
+    
+    const perfilConfig = {
+        admin: { label: 'Administrador', color: 'bg-purple-100 text-purple-700', icon: '👑' },
+        gerente: { label: 'Gerente', color: 'bg-blue-100 text-blue-700', icon: '📊' },
+        vendedor: { label: 'Vendedor', color: 'bg-green-100 text-green-700', icon: '💼' }
+    };
+    
+    const usuariosFiltrados = usuarios
+        .filter(u => {
+            const matchBusca = !busca || u.nome.toLowerCase().includes(busca.toLowerCase()) || u.email.toLowerCase().includes(busca.toLowerCase());
+            const matchPerfil = !filtroPerfil || u.perfil === filtroPerfil;
+            const matchStatus = !filtroStatus || (filtroStatus === 'ativo' ? u.ativo !== false : u.ativo === false);
+            return matchBusca && matchPerfil && matchStatus;
+        })
+        .sort((a, b) => {
+            if (ordenacao === 'nome') return a.nome.localeCompare(b.nome);
+            if (ordenacao === 'email') return a.email.localeCompare(b.email);
+            if (ordenacao === 'perfil') return a.perfil.localeCompare(b.perfil);
+            return 0;
+        });
+    
+    const stats = {
+        total: usuarios.length,
+        ativos: usuarios.filter(u => u.ativo !== false).length,
+        inativos: usuarios.filter(u => u.ativo === false).length,
+        admin: usuarios.filter(u => u.perfil === 'admin').length,
+        gerente: usuarios.filter(u => u.perfil === 'gerente').length,
+        vendedor: usuarios.filter(u => u.perfil === 'vendedor').length
+    };
+    
+    const avatarColors = ['bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-pink-500', 'bg-yellow-500', 'bg-indigo-500', 'bg-red-500', 'bg-teal-500'];
+    
+    return (
+        <div className="space-y-5">
+            <div className="bg-white p-5 rounded-xl shadow-sm border">
+                <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
+                    <span>👥</span>
+                    <span>Gestão de Usuários</span>
+                </h2>
+                
+                {/* PAINEL DE APROVAÇÕES */}
+                {(() => {
+                    const allUsers = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                    const pendentes = allUsers.filter(u => u.aprovado === false && u.ativo === false);
+                    if (pendentes.length > 0) {
+                        return (
+                            <div className="mt-5 bg-yellow-50 border-2 border-yellow-300 rounded-xl p-5">
+                                <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                                    <span>🔔</span>
+                                    <span>Solicitações Pendentes ({pendentes.length})</span>
+                                </h3>
+                                <div className="space-y-3">
+                                    {pendentes.map(user => (
+                                        <div key={user.id} className="bg-white border-2 border-yellow-200 rounded-lg p-4 flex items-center justify-between">
+                                            <div>
+                                                <div className="font-bold text-lg">{user.nome}</div>
+                                                <div className="text-sm text-gray-600">{user.email}</div>
+                                                {user.telefone && <div className="text-sm text-gray-500">📞 {user.telefone}</div>}
+                                                <div className="text-xs text-gray-400 mt-1">Solicitado: {new Date(user.data_solicitacao).toLocaleString('pt-BR')}</div>
+                                            </div>
+                                            <div className="flex gap-2 items-center">
+                                                <select id={`perfil-${user.id}`} defaultValue="vendedor" className="px-3 py-2 border-2 border-gray-300 rounded-lg text-sm font-medium bg-white">
+                                                    <option value="vendedor">💼 Vendedor</option>
+                                                    <option value="gerente">📊 Gerente</option>
+                                                    <option value="admin">👑 Admin</option>
+                                                </select>
+                                                <button onClick={() => {
+                                                    const perfilEscolhido = document.getElementById(`perfil-${user.id}`).value;
+                                                    const allUsers = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                                                    const idx = allUsers.findIndex(u => u.id === user.id);
+                                                    allUsers[idx].aprovado = true;
+                                                    allUsers[idx].ativo = true;
+                                                    allUsers[idx].perfil = perfilEscolhido;
+                                                    localStorage.setItem('usuarios', JSON.stringify(allUsers));
+                                                    showToast('✅ Usuário aprovado como ' + perfilEscolhido + '!');
+                                                    setTimeout(() => {
+                                                        localStorage.setItem('lastPage', 'usuarios');
+                                                        window.location.reload();
+                                                    }, 1000);
+                                                }} className="px-4 py-2 bg-green-500 text-white rounded-lg font-bold hover:bg-green-600 text-sm">
+                                                    ✅ Aprovar
+                                                </button>
+                                                <button onClick={() => {
+                                                    if (window.confirm('Deseja realmente rejeitar esta solicitação? Esta ação não pode ser desfeita.')) {
+                                                        const allUsers = JSON.parse(localStorage.getItem('usuarios') || '[]');
+                                                        const filtered = allUsers.filter(u => u.id !== user.id);
+                                                        localStorage.setItem('usuarios', JSON.stringify(filtered));
+                                                        showToast('❌ Solicitação rejeitada');
+                                                        setTimeout(() => {
+                                                            localStorage.setItem('lastPage', 'usuarios');
+                                                            window.location.reload();
+                                                        }, 1000);
+                                                    }
+                                                }} className="px-4 py-2 bg-red-500 text-white rounded-lg font-bold hover:bg-red-600 text-sm">
+                                                    ❌ Rejeitar
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    }
+                    return null;
+                })()}
+                
+                
+                <div className="grid grid-cols-4 gap-3 mb-4">
+                    <input 
+                        type="text" 
+                        placeholder="🔍 Buscar usuário (nome ou email)..." 
+                        value={busca} 
+                        onChange={(e) => setBusca(e.target.value)}
+                        className="px-4 py-2 border-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                    <select 
+                        value={filtroPerfil}
+                        onChange={(e) => setFiltroPerfil(e.target.value)}
+                        className="px-4 py-2 border-2 rounded-lg text-sm"
+                    >
+                        <option value="">🎭 Todos os Perfis</option>
+                        <option value="admin">👑 Administrador</option>
+                        <option value="gerente">📊 Gerente</option>
+                        <option value="vendedor">💼 Vendedor</option>
+                    </select>
+                    <select 
+                        value={filtroStatus}
+                        onChange={(e) => setFiltroStatus(e.target.value)}
+                        className="px-4 py-2 border-2 rounded-lg text-sm"
+                    >
+                        <option value="">📊 Todos os Status</option>
+                        <option value="ativo">✅ Ativos</option>
+                        <option value="inativo">❌ Inativos</option>
+                    </select>
+                    <select 
+                        value={ordenacao}
+                        onChange={(e) => setOrdenacao(e.target.value)}
+                        className="px-4 py-2 border-2 rounded-lg text-sm"
+                    >
+                        <option value="nome">Ordenar: Nome</option>
+                        <option value="email">Ordenar: Email</option>
+                        <option value="perfil">Ordenar: Perfil</option>
+                    </select>
+                </div>
+                
+                <button 
+                    onClick={onAdd}
+                    className="w-full px-6 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg font-bold text-sm"
+                >
+                    + Adicionar Novo Usuário
+                </button>
+            </div>
+            
+            <div className="grid grid-cols-6 gap-3">
+                <div className="bg-gradient-to-br from-gray-700 to-gray-800 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">{stats.total}</div>
+                    <div className="text-sm opacity-90">Total</div>
+                </div>
+                <div className="bg-gradient-to-br from-green-500 to-green-600 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">{stats.ativos}</div>
+                    <div className="text-sm opacity-90">Ativos</div>
+                </div>
+                <div className="bg-gradient-to-br from-red-500 to-red-600 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">{stats.inativos}</div>
+                    <div className="text-sm opacity-90">Inativos</div>
+                </div>
+                <div className="bg-gradient-to-br from-purple-500 to-purple-600 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">{stats.admin}</div>
+                    <div className="text-sm opacity-90">Admins</div>
+                </div>
+                <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">{stats.gerente}</div>
+                    <div className="text-sm opacity-90">Gerentes</div>
+                </div>
+                <div className="bg-gradient-to-br from-teal-500 to-teal-600 text-white p-5 rounded-xl shadow-lg">
+                    <div className="text-3xl font-bold mb-1">{stats.vendedor}</div>
+                    <div className="text-sm opacity-90">Vendedores</div>
+                </div>
+            </div>
+            
+            <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                <table className="w-full">
+                    <thead className="bg-gray-50 border-b">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Usuário</th>
+                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Email</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Perfil</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Status</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Última Atividade</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                        {usuariosFiltrados.map(u => {
+                            const config = perfilConfig[u.perfil] || perfilConfig.vendedor;
+                            const avatarColor = avatarColors[u.id % avatarColors.length];
+                            const ultimaAtividade = u.ultima_atividade ? new Date(u.ultima_atividade).toLocaleDateString('pt-BR') : 'Nunca';
+                            
+                            return (
+                                <tr key={u.id} className="hover:bg-gray-50">
+                                    <td className="px-6 py-4">
+                                        <div className="flex items-center gap-3">
+                                            <div className={'w-10 h-10 rounded-full flex items-center justify-center text-white font-bold ' + avatarColor}>
+                                                {u.nome.split(' ').map(n => n.charAt(0)).join('').substr(0, 2).toUpperCase()}
+                                            </div>
+                                            <div>
+                                                <div className="font-semibold text-sm">{u.nome}</div>
+                                                {u.telefone && <div className="text-xs text-gray-500">{u.telefone}</div>}
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td className="px-6 py-4 text-sm text-gray-600">
+                                        {u.email}
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <span className={'px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1 ' + config.color}>
+                                            <span>{config.icon}</span>
+                                            <span>{config.label}</span>
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <span className={'px-3 py-1 rounded-full text-xs font-semibold ' + (u.ativo !== false ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')}>
+                                            {u.ativo !== false ? '✅ Ativo' : '❌ Inativo'}
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-center text-xs text-gray-600">
+                                        {ultimaAtividade}
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <div className="flex gap-2 justify-center">
+                                            <button 
+                                                onClick={() => onEdit(u)} 
+                                                className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded text-xs font-medium"
+                                                title="Editar"
+                                            >
+                                                ✏️
+                                            </button>
+                                            <button 
+                                                onClick={() => {
+                                                    if (window.confirm('Tem certeza que deseja excluir este usuário?')) {
+                                                        onDelete(u.id);
+                                                    }
+                                                }} 
+                                                className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded text-xs font-medium"
+                                                title="Excluir"
+                                            >
+                                                🗑️
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+                
+                {usuariosFiltrados.length === 0 && (
+                    <div className="p-8 text-center text-gray-500">
+                        <div className="text-4xl mb-2">👤</div>
+                        <div className="text-sm">Nenhum usuário encontrado</div>
+                    </div>
+                )}
+            </div>
+            
+            <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-5">
+                <h3 className="font-bold text-blue-900 mb-3">ℹ️ Permissões por Perfil</h3>
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                    <div>
+                        <div className="font-bold text-purple-700 mb-2">👑 Administrador</div>
+                        <ul className="text-xs text-gray-700 space-y-1">
+                            <li>✅ Acesso total ao sistema</li>
+                            <li>✅ Gerenciar usuários</li>
+                            <li>✅ Ver todos os relatórios</li>
+                            <li>✅ Configurar metas</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <div className="font-bold text-blue-700 mb-2">📊 Gerente</div>
+                        <ul className="text-xs text-gray-700 space-y-1">
+                            <li>✅ Ver relatórios da equipe</li>
+                            <li>✅ Gerenciar leads</li>
+                            <li>✅ Aprovar vendas</li>
+                            <li>❌ Gerenciar usuários</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <div className="font-bold text-green-700 mb-2">💼 Vendedor</div>
+                        <ul className="text-xs text-gray-700 space-y-1">
+                            <li>✅ Ver próprios leads</li>
+                            <li>✅ Registrar atividades</li>
+                            <li>✅ Criar vendas</li>
+                            <li>✅ Ver próprios relatórios</li>
+                            <li>❌ Ver dados de outros</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+function Metas({ vendedores, vendas, ligacoes, showToast, usuarioLogado }) {
+    const [selectedVendedor, setSelectedVendedor] = useState('');
+    const [metaDiaria, setMetaDiaria] = useState(15);
+    const [metaMensal, setMetaMensal] = useState(50000);
+    
+    // Filtrar vendedores baseado no perfil
+    const vendedoresFiltrados = usuarioLogado?.perfil === 'vendedor'
+        ? vendedores.filter(v => v.id === usuarioLogado.id)
+        : usuarioLogado?.perfil === 'gerente'
+        ? vendedores.filter(v => v.gerente_id === usuarioLogado.id)
+        : vendedores;
+    
+    const salvarMeta = () => {
+        if (!selectedVendedor) {
+            showToast('Selecione um vendedor!', 'error');
+            return;
+        }
+        localStorage.setItem('meta_' + selectedVendedor, JSON.stringify({
+            diaria: metaDiaria, 
+            mensal: metaMensal,
+            data: new Date().toISOString()
+        }));
+        showToast('Meta salva com sucesso!');
+        setSelectedVendedor('');
+    };
+    
+    const hoje = new Date().toDateString();
+    const mesAtual = new Date().getMonth();
+    
+    return (
+        <div className="space-y-6">
+            <div className="bg-white p-6 rounded-xl shadow-sm border">
+                <h2 className="text-2xl font-bold mb-6">🎯 Definir Metas por Vendedor</h2>
+                <div className="grid grid-cols-3 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-2 text-gray-700">Vendedor</label>
+                        <select value={selectedVendedor} onChange={(e) => setSelectedVendedor(e.target.value)} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-green-500">
+                            <option value="">Selecione...</option>
+                            {vendedores.map(v => <option key={v.id} value={v.id}>{v.nome}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-2 text-gray-700">Meta Diária (ligações)</label>
+                        <input type="number" value={metaDiaria} onChange={(e) => setMetaDiaria(parseInt(e.target.value))} className="w-full px-4 py-3 border rounded-lg" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-2 text-gray-700">Meta Mensal (R$)</label>
+                        <input type="number" value={metaMensal} onChange={(e) => setMetaMensal(parseInt(e.target.value))} className="w-full px-4 py-3 border rounded-lg" />
+                    </div>
+                </div>
+                <button onClick={salvarMeta} className="mt-6 px-8 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg font-bold">💾 Salvar Meta</button>
+            </div>
+            
+            <div className="grid grid-cols-3 gap-4">
+                {vendedoresFiltrados.map(v => {
+                    const meta = JSON.parse(localStorage.getItem('meta_' + v.id) || '{"diaria":0,"mensal":0}');
+                    const ligacoesHoje = ligacoes.filter(l => l.vendedor_id === v.id && new Date(l.data).toDateString() === hoje).length;
+                    const vendasMes = vendas.filter(vd => vd.vendedor_id === v.id && new Date(vd.data).getMonth() === mesAtual);
+                    const faturamentoMes = vendasMes.reduce((s, vd) => s + parseFloat(vd.valor_bruto || 0), 0);
+                    const progressoDiario = meta.diaria > 0 ? (ligacoesHoje / meta.diaria) * 100 : 0;
+                    const progressoMensal = meta.mensal > 0 ? (faturamentoMes / meta.mensal) * 100 : 0;
+                    
+                    return (
+                        <div key={v.id} className="bg-white p-6 rounded-xl shadow-lg border-2">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-xl">{v.nome.charAt(0)}</div>
+                                <div><h3 className="font-bold text-lg">{v.nome}</h3><p className="text-xs text-gray-500">Performance</p></div>
+                            </div>
+                            <div className="mb-4">
+                                <div className="flex justify-between mb-2"><span className="text-sm font-medium">Ligações Hoje</span><span className="text-sm font-bold">{ligacoesHoje} / {meta.diaria}</span></div>
+                                <div className="w-full bg-gray-200 rounded-full h-3"><div className={'h-3 rounded-full ' + (progressoDiario >= 100 ? 'bg-green-500' : 'bg-blue-500')} style={{width: Math.min(progressoDiario, 100) + '%'}}></div></div>
+                                <p className="text-xs text-gray-500 mt-1">{progressoDiario.toFixed(0)}% da meta</p>
+                            </div>
+                            <div>
+                                <div className="flex justify-between mb-2"><span className="text-sm font-medium">Faturamento Mês</span><span className="text-sm font-bold">R$ {faturamentoMes.toLocaleString('pt-BR')}</span></div>
+                                <div className="w-full bg-gray-200 rounded-full h-3"><div className={'h-3 rounded-full ' + (progressoMensal >= 100 ? 'bg-green-500' : 'bg-orange-500')} style={{width: Math.min(progressoMensal, 100) + '%'}}></div></div>
+                                <p className="text-xs text-gray-500 mt-1">{progressoMensal.toFixed(0)}% da meta (R$ {meta.mensal.toLocaleString('pt-BR')})</p>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+function Relatorios({ vendas, vendedores, clientes, clientesFinais, fmt, usuarioLogado }) {
+            // Se for vendedor, mostrar apenas seus próprios dados
+            const vendasFiltradas = usuarioLogado?.perfil === 'vendedor' 
+                ? vendas.filter(v => v.vendedor_id === usuarioLogado.id)
+                : vendas;
+            
+            const vendedoresFiltrados = usuarioLogado?.perfil === 'vendedor'
+                ? vendedores.filter(v => v.id === usuarioLogado.id)
+                : vendedores;
+            
+    return (
+        <div className="space-y-6">
+            <div className="bg-white p-6 rounded-xl shadow-sm border">
+                <h2 className="text-2xl font-bold mb-6">📊 Relatórios Gerenciais</h2>
+                
+                <h3 className="text-lg font-bold mb-4">Performance por Vendedor</h3>
+                <div className="grid grid-cols-3 gap-4">
+                    {vendedoresFiltrados.map(v => {
+                        const vendasV = vendasFiltradas.filter(vd => vd.vendedor_id === v.id);
+                        const total = vendasV.reduce((s, vd) => s + parseFloat(vd.valor_bruto || 0), 0);
+                        return (
+                            <div key={v.id} className="p-4 border rounded-xl">
+                                <h4 className="font-bold mb-2">{v.nome}</h4>
+                                <div className="text-sm space-y-1">
+                                    <div className="flex justify-between"><span>Vendas:</span><span className="font-bold">{vendasV.length}</span></div>
+                                    <div className="flex justify-between"><span>Total:</span><span className="font-bold text-green-600">{fmt(total)}</span></div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+                
+                <h3 className="text-lg font-bold mt-8 mb-4">Análise por Cliente Primário</h3>
+                <div className="space-y-3">
+                    {clientes.map(c => {
+                        const leads = clientesFinais.filter(cf => cf.cliente_primario_id === c.id);
+                        const vendasC = vendas.filter(v => v.cliente_id === c.id);
+                        return (
+                            <div key={c.id} className="p-4 border rounded-xl">
+                                <h4 className="font-bold text-lg mb-2">{c.nome}</h4>
+                                <div className="grid grid-cols-4 gap-3 text-sm">
+                                    <div className="text-center p-2 bg-blue-50 rounded"><div className="font-bold text-xl text-blue-600">{leads.length}</div><div className="text-xs">Leads</div></div>
+                                    <div className="text-center p-2 bg-green-50 rounded"><div className="font-bold text-xl text-green-600">{vendasC.length}</div><div className="text-xs">Vendas</div></div>
+                                    <div className="text-center p-2 bg-purple-50 rounded"><div className="font-bold text-xl text-purple-600">{leads.length > 0 ? ((vendasC.length/leads.length)*100).toFixed(0) : 0}%</div><div className="text-xs">Conversão</div></div>
+                                    <div className="text-center p-2 bg-yellow-50 rounded"><div className="font-bold text-xl text-yellow-600">{fmt(vendasC.reduce((s,v) => s + parseFloat(v.valor_bruto||0), 0))}</div><div className="text-xs">Faturado</div></div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ========================================
+// 💰 COMPONENTE COMISSÕES
+// ========================================
+function Comissoes({ vendas, vendedores, fmt, showToast, usuarioLogado }) {
+    const [filtroPago, setFiltroPago] = useState('pendente');
+    
+    // Filtrar vendedores baseado no perfil
+    const vendedoresFiltrados = usuarioLogado?.perfil === 'vendedor'
+        ? vendedores.filter(v => v.id === usuarioLogado.id)
+        : usuarioLogado?.perfil === 'gerente'
+        ? vendedores.filter(v => v.gerente_id === usuarioLogado.id)
+        : vendedores;
+    
+    const vendasFiltradas = vendas.filter(v => 
+        filtroPago === 'todos' ? true : 
+        filtroPago === 'pago' ? v.comissao_paga : 
+        !v.comissao_paga
+    );
+    
+    return (
+        <div className="space-y-4">
+            <div className="bg-white p-4 rounded-xl shadow-sm border">
+                <select value={filtroPago} onChange={(e) => setFiltroPago(e.target.value)} className="px-4 py-2 border rounded-lg">
+                    <option value="pendente">💰 Pendentes</option>
+                    <option value="pago">✅ Pagas</option>
+                    <option value="todos">📋 Todas</option>
+                </select>
+            </div>
+            
+            <div className="grid grid-cols-3 gap-4">
+                {vendedoresFiltrados.map(v => {
+                    const vendasV = vendasFiltradas.filter(vd => vd.vendedor_id === v.id);
+                    const totalComissao = vendasV.reduce((s, vd) => s + parseFloat(vd.valor_comissao || 0), 0);
+                    return (
+                        <div key={v.id} className="bg-white p-5 rounded-xl shadow-sm border">
+                            <h3 className="font-bold text-lg mb-3">{v.nome}</h3>
+                            <div className="text-3xl font-bold text-green-600 mb-2">{fmt(totalComissao)}</div>
+                            <div className="text-sm text-gray-600">{vendasV.length} vendas</div>
+                        </div>
+                    );
+                })}
+            </div>
+            
+            <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                <table className="w-full">
+                    <thead className="bg-gray-50 border-b">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-semibold">Vendedor</th>
+                            <th className="px-6 py-3 text-left text-xs font-semibold">Cliente</th>
+                            <th className="px-6 py-3 text-right text-xs font-semibold">Venda</th>
+                            <th className="px-6 py-3 text-right text-xs font-semibold">Comissão</th>
+                            <th className="px-6 py-3 text-center text-xs font-semibold">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                        {vendasFiltradas.map(v => (
+                            <tr key={v.id} className="hover:bg-gray-50">
+                                <td className="px-6 py-4 text-sm">{v.vendedor_nome}</td>
+                                <td className="px-6 py-4 text-sm">{v.cliente_nome}</td>
+                                <td className="px-6 py-4 text-sm text-right font-bold">{fmt(v.valor_bruto)}</td>
+                                <td className="px-6 py-4 text-sm text-right font-bold text-green-600">{fmt(v.valor_comissao)}</td>
+                                <td className="px-6 py-4 text-center">
+                                    <span className={'px-3 py-1 rounded-full text-xs font-semibold ' + (v.comissao_paga ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700')}>
+                                        {v.comissao_paga ? '✅ Paga' : '⏳ Pendente'}
+                                    </span>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+}
+
+
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>

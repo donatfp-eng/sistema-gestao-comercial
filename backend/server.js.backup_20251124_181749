@@ -1,0 +1,374 @@
+const express = require('express');
+const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+
+const app = express();
+const PORT = 3000;
+const JWT_SECRET = 'seu-secret-super-seguro-aqui';
+
+const pool = new Pool({
+    user: 'gestao_user',
+    host: 'localhost',
+    database: 'sistema_gestao',
+    password: 'senha123',
+    port: 5432,
+});
+
+app.use(cors());
+app.use(express.json());
+
+const auth = (req, res, next) => {
+    const token = req.headers['authorization']?.split(' ')[1];
+    if (!token) return res.sendStatus(401);
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403);
+        req.user = user;
+        next();
+    });
+};
+
+// LOGIN
+app.post('/api/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const result = await pool.query('SELECT * FROM usuarios WHERE email = $1', [email]);
+        if (result.rows.length === 0) return res.status(401).json({ error: 'Credenciais inválidas' });
+        const user = result.rows[0];
+        const validPassword = await bcrypt.compare(password, user.senha);
+        if (!validPassword) return res.status(401).json({ error: 'Credenciais inválidas' });
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+        res.json({ token, user: { id: user.id, nome: user.nome, email: user.email, tipo: user.tipo, perfil: user.perfil } });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao fazer login' });
+    }
+});
+
+// USUARIOS
+app.get('/api/usuarios', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM usuarios ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.post('/api/usuarios', async (req, res) => {
+    try {
+        const { nome, email, senha, perfil, status } = req.body;
+        const hashedPassword = await bcrypt.hash(senha, 10);
+        const result = await pool.query(
+            'INSERT INTO usuarios (nome, email, senha, perfil, tipo, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+            [nome, email, hashedPassword, perfil || 'vendedor', perfil || 'vendedor', status || 'ativo']
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.put('/api/usuarios/:id', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updates = req.body;
+        const fields = Object.keys(updates).map((key, i) => `${key} = $${i + 2}`).join(', ');
+        const values = Object.values(updates);
+        await pool.query(`UPDATE usuarios SET ${fields} WHERE id = $1`, [id, ...values]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.delete('/api/usuarios/:id', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await pool.query('DELETE FROM usuarios WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao excluir' });
+    }
+});
+
+// CLIENTES
+app.get('/api/clientes', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM clientes ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.post('/api/clientes', auth, async (req, res) => {
+    try {
+        const { nome, cnpj, email, telefone, percentual_comissao } = req.body;
+        const result = await pool.query(
+            'INSERT INTO clientes (nome, cnpj, email, telefone, percentual_comissao) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [nome, cnpj, email, telefone, percentual_comissao || 0]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+// CLIENTES FINAIS
+app.get('/api/clientes_finais', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM clientes_finais ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.post('/api/clientes_finais', auth, async (req, res) => {
+    try {
+        const data = req.body;
+        const result = await pool.query(
+            `INSERT INTO clientes_finais (nome, cpf_cnpj, email, telefone, whatsapp, endereco_rua, endereco_numero, 
+             endereco_complemento, endereco_bairro, endereco_cidade, endereco_estado, endereco_cep, 
+             cliente_primario_id, observacoes, status_contato, observacoes_contato, data_primeiro_contato) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW()) RETURNING *`,
+            [data.nome, data.cpf_cnpj, data.email, data.telefone, data.whatsapp, data.endereco_rua,
+             data.endereco_numero, data.endereco_complemento, data.endereco_bairro, data.endereco_cidade,
+             data.endereco_estado, data.endereco_cep, data.cliente_primario_id, data.observacoes,
+             data.status_contato || 'não_contatado', data.observacoes_contato]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.put('/api/clientes_finais/:id', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const dados = req.body;
+        
+        // Campos permitidos para atualização
+        const camposPermitidos = [
+            'nome', 'email', 'telefone', 'whatsapp', 'cpf_cnpj',
+            'endereco_rua', 'endereco_numero', 'endereco_bairro', 'endereco_cidade', 'endereco_estado', 'endereco_cep',
+            'status_contato', 'ultima_tentativa', 'etapa_funil', 'temperatura', 
+            'valor_potencial', 'data_followup', 'ultima_interacao', 
+            'observacoes_contato', 'motivo_perda', 'vendedor_id', 'origem'
+        ];
+        
+        // Montar query dinâmica
+        const campos = [];
+        const valores = [];
+        let idx = 1;
+        
+        for (const campo of camposPermitidos) {
+            if (dados[campo] !== undefined) {
+                campos.push(`${campo} = $${idx}`);
+                valores.push(dados[campo]);
+                idx++;
+            }
+        }
+        
+        if (campos.length === 0) {
+            return res.status(400).json({ error: 'Nenhum campo para atualizar' });
+        }
+        
+        valores.push(id);
+        const query = `UPDATE clientes_finais SET ${campos.join(', ')} WHERE id = $${idx}`;
+        
+        await pool.query(query, valores);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Erro ao atualizar cliente_final:', error);
+        res.status(500).json({ error: 'Erro ao atualizar' });
+    }
+});
+
+// VENDEDORES
+app.get('/api/vendedores', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM vendedores ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.post('/api/vendedores', auth, async (req, res) => {
+    try {
+        const { nome, email, telefone, meta_mensal, equipe_id, usuario_id } = req.body;
+        const result = await pool.query(
+            'INSERT INTO vendedores (nome, email, telefone, meta_mensal, equipe_id, usuario_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+            [nome, email, telefone, meta_mensal || 0, equipe_id, usuario_id]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.put('/api/vendedores/:id', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { equipe_id } = req.body;
+        await pool.query('UPDATE vendedores SET equipe_id = $1 WHERE id = $2', [equipe_id, id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+// VENDAS
+app.get('/api/vendas', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM vendas ORDER BY created_at DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.post('/api/vendas', auth, async (req, res) => {
+    try {
+        const data = req.body;
+        const result = await pool.query(
+            `INSERT INTO vendas (cliente_id, vendedor_id, cliente_final_id, valor_bruto, valor_comissao, 
+             faturada, data, cliente_nome, vendedor_nome) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+            [data.cliente_id, data.vendedor_id, data.cliente_final_id, data.valor_bruto, data.valor_comissao,
+             data.faturada || false, data.data || new Date().toISOString(), data.cliente_nome, data.vendedor_nome]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+// LIGACOES
+app.get('/api/ligacoes', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM ligacoes ORDER BY created_at DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.post('/api/ligacoes', auth, async (req, res) => {
+    try {
+        const data = req.body;
+        const result = await pool.query(
+            `INSERT INTO ligacoes (cliente_id, vendedor_id, cliente_final_id, status, duracao, data, 
+             cliente_nome, vendedor_nome, observacoes) 
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8) RETURNING *`,
+            [data.cliente_id, data.vendedor_id, data.cliente_final_id, data.status, data.duracao || 0,
+             data.cliente_nome, data.vendedor_nome, data.observacoes]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+// EQUIPES
+app.get('/api/equipes', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM equipes ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.post('/api/equipes', auth, async (req, res) => {
+    try {
+        const { nome, gestor_id } = req.body;
+        const result = await pool.query(
+            'INSERT INTO equipes (nome, gestor_id) VALUES ($1, $2) RETURNING *',
+            [nome, gestor_id]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+// METAS
+app.get('/api/metas', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM metas ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+
+// PROPOSTAS
+app.get('/api/propostas', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM propostas ORDER BY created_at DESC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.post('/api/propostas', auth, async (req, res) => {
+    try {
+        const data = req.body;
+        const result = await pool.query(
+            `INSERT INTO propostas (titulo, cliente_id, vendedor_id, valor_total, status, data_criacao, observacoes) 
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6) RETURNING *`,
+            [data.titulo, data.cliente_id, data.vendedor_id, data.valor_total, data.status || 'rascunho', data.observacoes]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.put('/api/propostas/:id', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updates = req.body;
+        const fields = Object.keys(updates).map((key, i) => `${key} = $${i + 2}`).join(', ');
+        const values = Object.values(updates);
+        await pool.query(`UPDATE propostas SET ${fields} WHERE id = $1`, [id, ...values]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+app.delete('/api/propostas/:id', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await pool.query('DELETE FROM propostas WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+    try {
+        const data = req.body;
+        const result = await pool.query(
+            `INSERT INTO metas (vendedor_id, tipo, periodo, valor_meta, mes, ano, vendedor_nome) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+            [data.vendedor_id, data.tipo, data.periodo, data.valor_meta, data.mes, data.ano, data.vendedor_nome]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro' });
+    }
+});
+
+pool.connect((err) => {
+    if (err) console.error('❌ Erro PostgreSQL:', err);
+    else console.log('✅ Conectado ao PostgreSQL');
+});
+
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor rodando na porta ${PORT}`);
+});

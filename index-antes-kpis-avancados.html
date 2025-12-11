@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GSD - Sistema de Gestão Comercial</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { font-family: 'Inter', sans-serif; margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #f5f5f5; }
+        .sidebar-item { transition: all 0.2s; }
+        .sidebar-item:hover { background: #f0f0f0; }
+        .sidebar-item.active { background: #e8f5e9; border-left: 3px solid #4caf50; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const API_URL = '/api';
+        
+        const api = {
+            from: (table) => ({
+                select: async () => {
+                    const token = sessionStorage.getItem('token');
+                    const res = await fetch(API_URL + '/' + table, { headers: token ? {'Authorization': 'Bearer ' + token} : {} });
+                    return {data: res.ok ? await res.json() : []};
+                },
+                insert: async (records) => {
+                    const token = sessionStorage.getItem('token');
+                    const arr = Array.isArray(records) ? records : [records];
+                    for (const r of arr) {
+                        await fetch(API_URL + '/' + table, { method: 'POST', headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}, body: JSON.stringify(r) });
+                    }
+                }
+            })
+        };
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [page, setPage] = useState('dashboard');
+            const [loading, setLoading] = useState(true);
+            const [showModal, setShowModal] = useState(null);
+            const [toast, setToast] = useState(null);
+            const [data, setData] = useState({ usuarios: [], clientes: [], clientesFinais: [], vendedores: [], vendas: [], ligacoes: [] });
+
+            useEffect(() => {
+                const saved = localStorage.getItem('user');
+                if (saved) setUser(JSON.parse(saved));
+                loadData();
+            }, []);
+
+            const loadData = async () => {
+                const [u, c, cf, vd, v, l] = await Promise.all([
+                    api.from('usuarios').select(), api.from('clientes').select(), api.from('clientes_finais').select(),
+                    api.from('vendedores').select(), api.from('vendas').select(), api.from('ligacoes').select()
+                ]);
+                setData({ usuarios: u.data, clientes: c.data, clientesFinais: cf.data, vendedores: vd.data, vendas: v.data, ligacoes: l.data });
+                setLoading(false);
+            };
+
+            const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+
+            const login = async (email, senha) => {
+                const res = await fetch(API_URL + '/login', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email, password: senha}) });
+                if (res.ok) {
+                    const {token, user} = await res.json();
+                    sessionStorage.setItem('token', token);
+                    localStorage.setItem('user', JSON.stringify(user));
+                    setUser(user);
+                    return true;
+                }
+                return false;
+            };
+
+            const addCliente = async (form) => { await api.from('clientes').insert([form]); await loadData(); setShowModal(null); showToast('Cliente adicionado!'); };
+            const addContato = async (form) => { await api.from('clientes_finais').insert([form]); await loadData(); setShowModal(null); showToast('Contato adicionado!'); };
+            
+            const addVenda = async (form) => {
+                const cliente = data.clientes.find(c => c.id === parseInt(form.cliente_id));
+                const vendedor = data.vendedores.find(v => v.id === parseInt(form.vendedor_id));
+                const comissao = parseFloat(form.valor_bruto) * (parseFloat(cliente.percentual_comissao) / 100);
+                await api.from('vendas').insert([{ cliente_id: parseInt(form.cliente_id), vendedor_id: parseInt(form.vendedor_id), valor_bruto: parseFloat(form.valor_bruto), valor_comissao: comissao, data: new Date().toISOString(), cliente_nome: cliente.nome, vendedor_nome: vendedor.nome, faturada: false }]);
+                await loadData(); setShowModal(null); showToast('Venda registrada!');
+            };
+
+            const addLigacao = async (form) => {
+                const cliente = data.clientes.find(c => c.id === parseInt(form.cliente_id));
+                const vendedor = data.vendedores.find(v => v.id === parseInt(form.vendedor_id));
+                await api.from('ligacoes').insert([{ cliente_id: parseInt(form.cliente_id), vendedor_id: parseInt(form.vendedor_id), data: new Date().toISOString(), cliente_nome: cliente.nome, vendedor_nome: vendedor.nome, status: form.status }]);
+                await loadData(); setShowModal(null); showToast('Atividade registrada!');
+            };
+
+            const importExcel = async (file) => {
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const json = XLSX.utils.sheet_to_json(sheet);
+                    for (const row of json) {
+                        await api.from('clientes_finais').insert([{ nome: row.Nome || row.nome, telefone: row.Telefone || row.telefone, whatsapp: row.WhatsApp || row.whatsapp, email: row.Email || row.email, cliente_primario_id: parseInt(row.ClienteID || row.cliente_id || 1) }]);
+                    }
+                    await loadData(); setShowModal(null); showToast('Importado ' + json.length + ' contatos!');
+                };
+                reader.readAsArrayBuffer(file);
+            };
+
+            const fmt = (v) => new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format(v);
+
+            if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="w-12 h-12 border-4 border-green-500 border-t-transparent rounded-full animate-spin"></div></div>;
+            if (!user) return <Login onLogin={login} />;
+
+            const kpis = { faturamento: data.vendas.reduce((s, v) => s + parseFloat(v.valor_bruto || 0), 0), comissoes: data.vendas.reduce((s, v) => s + parseFloat(v.valor_comissao || 0), 0), totalLig: data.ligacoes.length, ligEfet: data.ligacoes.filter(l => l.status === 'efetivada').length, totalVendas: data.vendas.length };
+
+            const menuItems = [ {id: 'dashboard', icon: '📊', label: 'Dashboard'}, {id: 'vendas', icon: '💰', label: 'Vendas'}, {id: 'clientes', icon: '🏢', label: 'Clientes'}, {id: 'clientes_finais', icon: '👥', label: 'Contatos'}, {id: 'ligacoes', icon: '📞', label: 'Atividades'} ];
+
+            return (
+                <div className="flex h-screen bg-gray-50">
+                    <div className="w-64 bg-white border-r flex flex-col">
+                        <div className="p-6 border-b">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center text-white font-bold text-lg">G</div>
+                                <div><div className="font-bold text-lg">GSD</div><div className="text-xs text-gray-500">Gestão Comercial</div></div>
+                            </div>
+                        </div>
+                        <div className="flex-1 py-4">{menuItems.map(item => (<button key={item.id} onClick={() => setPage(item.id)} className={'sidebar-item w-full flex items-center gap-3 px-6 py-3 text-left ' + (page === item.id ? 'active text-green-700' : 'text-gray-700')}><span className="text-xl">{item.icon}</span><span className="text-sm font-medium">{item.label}</span></button>))}</div>
+                        <div className="border-t p-4">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center font-bold text-gray-700">{user.nome.charAt(0)}</div>
+                                <div className="flex-1"><div className="text-sm font-medium">{user.nome}</div><div className="text-xs text-gray-500">{user.perfil}</div></div>
+                                <button onClick={() => { setUser(null); sessionStorage.clear(); localStorage.clear(); }} className="text-gray-400 hover:text-gray-600">↗</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                        <div className="bg-white border-b px-8 py-5 flex items-center justify-between">
+                            <h1 className="text-2xl font-bold">{menuItems.find(m => m.id === page)?.label}</h1>
+                            <div className="flex gap-3">
+                                {page === 'vendas' && <button onClick={() => setShowModal('venda')} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2.5 rounded-lg font-semibold transition-all">+ Nova Venda</button>}
+                                {page === 'clientes' && <button onClick={() => setShowModal('cliente')} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2.5 rounded-lg font-semibold transition-all">+ Novo Cliente</button>}
+                                {page === 'clientes_finais' && (<><button onClick={() => setShowModal('import')} className="bg-blue-500 hover:bg-blue-600 text-white px-5 py-2.5 rounded-lg font-semibold transition-all">📊 Importar Excel</button><button onClick={() => setShowModal('contato')} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2.5 rounded-lg font-semibold transition-all">+ Novo Contato</button></>)}
+                                {page === 'ligacoes' && <button onClick={() => setShowModal('ligacao')} className="bg-green-500 hover:bg-green-600 text-white px-5 py-2.5 rounded-lg font-semibold transition-all">+ Nova Atividade</button>}
+                            </div>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-8">
+                            {page === 'dashboard' && <Dashboard kpis={kpis} fmt={fmt} vendas={data.vendas} ligacoes={data.ligacoes} vendedores={data.vendedores} />}
+                            {page === 'vendas' && <Vendas vendas={data.vendas} fmt={fmt} />}
+                            {page === 'clientes' && <Clientes clientes={data.clientes} />}
+                            {page === 'clientes_finais' && <Contatos contatos={data.clientesFinais} />}
+                            {page === 'ligacoes' && <Atividades ligacoes={data.ligacoes} />}
+                        </div>
+                    </div>
+                    {toast && <div style={{position: 'fixed', top: '20px', right: '20px', background: 'white', padding: '16px 24px', borderRadius: '12px', boxShadow: '0 8px 32px rgba(0,0,0,0.15)', borderLeft: '4px solid #4caf50'}}><span className="font-semibold">✓ {toast}</span></div>}
+                    {showModal === 'cliente' && <ModalCliente onSave={addCliente} onClose={() => setShowModal(null)} />}
+                    {showModal === 'contato' && <ModalContato clientes={data.clientes} onSave={addContato} onClose={() => setShowModal(null)} />}
+                    {showModal === 'venda' && <ModalVenda clientes={data.clientes} vendedores={data.vendedores} onSave={addVenda} onClose={() => setShowModal(null)} />}
+                    {showModal === 'ligacao' && <ModalLigacao clientes={data.clientes} vendedores={data.vendedores} onSave={addLigacao} onClose={() => setShowModal(null)} />}
+                    {showModal === 'import' && <ModalImport onImport={importExcel} onClose={() => setShowModal(null)} />}
+                </div>
+            );
+        }
+
+        function Login({ onLogin }) {
+            const [email, setEmail] = useState(''); const [senha, setSenha] = useState(''); const [erro, setErro] = useState('');
+            return (<div className="min-h-screen bg-gradient-to-br from-green-400 to-blue-500 flex items-center justify-center p-4"><div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md"><div className="text-center mb-8"><div className="w-16 h-16 bg-green-500 rounded-2xl flex items-center justify-center text-white font-bold text-2xl mx-auto mb-4">G</div><h1 className="text-3xl font-bold mb-2">Bem-vindo</h1><p className="text-gray-600">Faça login na sua conta</p></div><form onSubmit={async (e) => { e.preventDefault(); const ok = await onLogin(email, senha); if (!ok) setErro('Email ou senha incorretos'); }} className="space-y-4"><div><label className="block text-sm font-medium mb-2">Email</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 border rounded-lg" required /></div><div><label className="block text-sm font-medium mb-2">Senha</label><input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} className="w-full px-4 py-3 border rounded-lg" required /></div>{erro && <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm">{erro}</div>}<button type="submit" className="w-full bg-green-500 text-white py-3 rounded-lg font-semibold hover:bg-green-600">Entrar</button></form><div className="mt-6 pt-6 border-t text-center"><p className="text-xs text-gray-500 mb-2">Teste:</p><div className="bg-gray-50 rounded-lg p-3 text-sm"><div className="font-mono">admin@empresa.com</div><div className="font-mono">admin123</div></div></div></div></div>);
+        }
+
+        function Dashboard({ kpis, fmt, vendas, ligacoes, vendedores }) {
+            const lineRef = useRef(null); const pieRef = useRef(null); const barRef = useRef(null);
+            
+            useEffect(() => {
+                if (lineRef.current) {
+                    new Chart(lineRef.current, { type: 'line', data: { labels: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'], datasets: [{ label: 'Faturamento', data: [45000, 52000, 48000, 61000, 55000, 67000, 73000, 68000, 75000, 82000, 78000, 85000], borderColor: '#4caf50', backgroundColor: 'rgba(76,175,80,0.1)', tension: 0.4, fill: true }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } } });
+                }
+                if (pieRef.current) {
+                    const vData = vendedores.map(vd => ({ nome: vd.nome, total: vendas.filter(v => v.vendedor_id === vd.id).reduce((s, v) => s + parseFloat(v.valor_bruto || 0), 0) }));
+                    new Chart(pieRef.current, { type: 'doughnut', data: { labels: vData.map(v => v.nome), datasets: [{ data: vData.map(v => v.total), backgroundColor: ['#4caf50', '#2196f3', '#ff9800', '#e91e63'] }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } } });
+                }
+                if (barRef.current) {
+                    new Chart(barRef.current, { type: 'bar', data: { labels: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'], datasets: [{ label: 'Efetivadas', data: [12, 15, 18, 14, 20, 8], backgroundColor: '#4caf50' }, { label: 'Tentadas', data: [5, 8, 6, 7, 9, 3], backgroundColor: '#e0e0e0' }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } } });
+                }
+            }, [vendas, vendedores]);
+
+            return (<div className="space-y-6"><div className="grid grid-cols-4 gap-6"><div className="bg-white p-6 rounded-xl shadow hover:shadow-lg transition-all"><div className="flex items-center justify-between mb-3"><div className="text-4xl">💰</div><div className="text-xs font-semibold text-green-600 bg-green-100 px-2 py-1 rounded">+12.5%</div></div><div className="text-3xl font-bold mb-1">{fmt(kpis.faturamento)}</div><div className="text-sm text-gray-500">Faturamento Total</div></div><div className="bg-white p-6 rounded-xl shadow hover:shadow-lg transition-all"><div className="flex items-center justify-between mb-3"><div className="text-4xl">📞</div><div className="text-xs font-semibold text-blue-600 bg-blue-100 px-2 py-1 rounded">{kpis.ligEfet}/{kpis.totalLig}</div></div><div className="text-3xl font-bold mb-1">{kpis.totalLig}</div><div className="text-sm text-gray-500">Ligações</div></div><div className="bg-white p-6 rounded-xl shadow hover:shadow-lg transition-all"><div className="flex items-center justify-between mb-3"><div className="text-4xl">🎯</div><div className="text-xs font-semibold text-purple-600 bg-purple-100 px-2 py-1 rounded">+8.3%</div></div><div className="text-3xl font-bold mb-1">{kpis.totalVendas}</div><div className="text-sm text-gray-500">Vendas</div></div><div className="bg-white p-6 rounded-xl shadow hover:shadow-lg transition-all"><div className="flex items-center justify-between mb-3"><div className="text-4xl">💵</div><div className="text-xs font-semibold text-orange-600 bg-orange-100 px-2 py-1 rounded">+15.2%</div></div><div className="text-3xl font-bold mb-1">{fmt(kpis.comissoes)}</div><div className="text-sm text-gray-500">Comissões</div></div></div><div className="grid grid-cols-3 gap-6"><div className="col-span-2 bg-white p-6 rounded-xl shadow"><h3 className="text-lg font-bold mb-4">📈 Evolução de Faturamento</h3><div style={{height: '300px'}}><canvas ref={lineRef}></canvas></div></div><div className="bg-white p-6 rounded-xl shadow"><h3 className="text-lg font-bold mb-4">🥧 Vendas por Vendedor</h3><div style={{height: '300px'}}><canvas ref={pieRef}></canvas></div></div></div><div className="grid grid-cols-3 gap-6"><div className="bg-white p-6 rounded-xl shadow"><h3 className="text-lg font-bold mb-4">📊 Ligações da Semana</h3><div style={{height: '250px'}}><canvas ref={barRef}></canvas></div></div><div className="bg-white p-6 rounded-xl shadow"><h3 className="text-lg font-bold mb-4">🔥 Últimas Vendas</h3><div className="space-y-3">{vendas.slice(0, 4).map((v, i) => (<div key={i} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100"><div><div className="font-medium text-sm">{v.cliente_nome}</div><div className="text-xs text-gray-500">{v.vendedor_nome}</div></div><div className="text-base font-bold text-green-600">{fmt(v.valor_bruto)}</div></div>))}</div></div><div className="bg-white p-6 rounded-xl shadow"><h3 className="text-lg font-bold mb-4">⚡ Atividades</h3><div className="space-y-3">{ligacoes.slice(0, 4).map((l, i) => (<div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100"><div className={'w-2 h-2 rounded-full ' + (l.status === 'efetivada' ? 'bg-green-500' : 'bg-gray-300')}></div><div className="flex-1"><div className="font-medium text-sm">{l.cliente_nome}</div><div className="text-xs text-gray-500">{l.vendedor_nome}</div></div></div>))}</div></div></div></div>);
+        }
+
+        function Vendas({ vendas, fmt }) { return (<div className="bg-white rounded-xl shadow overflow-hidden"><table className="w-full"><thead className="bg-gray-50 border-b"><tr><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Cliente</th><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Vendedor</th><th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Valor</th><th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Status</th></tr></thead><tbody className="divide-y">{vendas.map(v => (<tr key={v.id} className="hover:bg-gray-50"><td className="px-6 py-4 font-medium">{v.cliente_nome}</td><td className="px-6 py-4 text-gray-600">{v.vendedor_nome}</td><td className="px-6 py-4 text-right font-bold text-green-600">{fmt(v.valor_bruto)}</td><td className="px-6 py-4 text-center"><span className={'px-3 py-1 rounded-full text-xs font-semibold ' + (v.faturada ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700')}>{v.faturada ? 'Faturada' : 'Pendente'}</span></td></tr>))}</tbody></table></div>); }
+        function Clientes({ clientes }) { return (<div className="bg-white rounded-xl shadow overflow-hidden"><table className="w-full"><thead className="bg-gray-50 border-b"><tr><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Nome</th><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">CNPJ</th><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Email</th><th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Comissão</th></tr></thead><tbody className="divide-y">{clientes.map(c => (<tr key={c.id} className="hover:bg-gray-50"><td className="px-6 py-4 font-medium">{c.nome}</td><td className="px-6 py-4 text-gray-600">{c.cnpj || '-'}</td><td className="px-6 py-4 text-gray-600">{c.email || '-'}</td><td className="px-6 py-4 text-right"><span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-semibold">{c.percentual_comissao}%</span></td></tr>))}</tbody></table></div>); }
+        function Contatos({ contatos }) { return (<div className="bg-white rounded-xl shadow overflow-hidden"><table className="w-full"><thead className="bg-gray-50 border-b"><tr><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Nome</th><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Telefone</th><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">WhatsApp</th><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Email</th></tr></thead><tbody className="divide-y">{contatos.map(c => (<tr key={c.id} className="hover:bg-gray-50"><td className="px-6 py-4 font-medium">{c.nome}</td><td className="px-6 py-4 text-gray-600">{c.telefone || '-'}</td><td className="px-6 py-4 text-gray-600">{c.whatsapp || '-'}</td><td className="px-6 py-4 text-gray-600">{c.email || '-'}</td></tr>))}</tbody></table></div>); }
+        function Atividades({ ligacoes }) { return (<div className="bg-white rounded-xl shadow overflow-hidden"><table className="w-full"><thead className="bg-gray-50 border-b"><tr><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Cliente</th><th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Vendedor</th><th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Status</th></tr></thead><tbody className="divide-y">{ligacoes.map(l => (<tr key={l.id} className="hover:bg-gray-50"><td className="px-6 py-4 font-medium">{l.cliente_nome}</td><td className="px-6 py-4 text-gray-600">{l.vendedor_nome}</td><td className="px-6 py-4 text-center"><span className={'px-3 py-1 rounded-full text-xs font-semibold ' + (l.status === 'efetivada' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600')}>{l.status === 'efetivada' ? 'Efetivada' : 'Tentada'}</span></td></tr>))}</tbody></table></div>); }
+
+        function ModalCliente({ onSave, onClose }) { const [form, setForm] = useState({nome: '', cnpj: '', email: '', telefone: '', percentual_comissao: 10}); return (<div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}><div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '600px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}><h2 className="text-2xl font-bold mb-6">Novo Cliente</h2><form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4"><div className="grid grid-cols-2 gap-4"><div><label className="block text-sm font-medium mb-2">Nome *</label><input value={form.nome} onChange={(e) => setForm({...form, nome: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required /></div><div><label className="block text-sm font-medium mb-2">CNPJ</label><input value={form.cnpj} onChange={(e) => setForm({...form, cnpj: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" /></div><div><label className="block text-sm font-medium mb-2">Email</label><input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" /></div><div><label className="block text-sm font-medium mb-2">Telefone</label><input value={form.telefone} onChange={(e) => setForm({...form, telefone: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" /></div><div><label className="block text-sm font-medium mb-2">% Comissão *</label><input type="number" step="0.1" value={form.percentual_comissao} onChange={(e) => setForm({...form, percentual_comissao: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required /></div></div><div className="flex gap-3 pt-4"><button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold">Salvar</button><button type="button" onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold">Cancelar</button></div></form></div></div>); }
+        function ModalContato({ clientes, onSave, onClose }) { const [form, setForm] = useState({nome: '', telefone: '', whatsapp: '', email: '', cliente_primario_id: ''}); return (<div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}><div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '600px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}><h2 className="text-2xl font-bold mb-6">Novo Contato</h2><form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4"><div className="grid grid-cols-2 gap-4"><div><label className="block text-sm font-medium mb-2">Nome *</label><input value={form.nome} onChange={(e) => setForm({...form, nome: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required /></div><div><label className="block text-sm font-medium mb-2">Cliente *</label><select value={form.cliente_primario_id} onChange={(e) => setForm({...form, cliente_primario_id: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select></div><div><label className="block text-sm font-medium mb-2">Telefone</label><input value={form.telefone} onChange={(e) => setForm({...form, telefone: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" /></div><div><label className="block text-sm font-medium mb-2">WhatsApp</label><input value={form.whatsapp} onChange={(e) => setForm({...form, whatsapp: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" /></div><div className="col-span-2"><label className="block text-sm font-medium mb-2">Email</label><input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" /></div></div><div className="flex gap-3 pt-4"><button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold">Salvar</button><button type="button" onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold">Cancelar</button></div></form></div></div>); }
+        function ModalVenda({ clientes, vendedores, onSave, onClose }) { const [form, setForm] = useState({cliente_id: '', vendedor_id: '', valor_bruto: ''}); return (<div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}><div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '500px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}><h2 className="text-2xl font-bold mb-6">Nova Venda</h2><form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4"><div><label className="block text-sm font-medium mb-2">Cliente *</label><select value={form.cliente_id} onChange={(e) => setForm({...form, cliente_id: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select></div><div><label className="block text-sm font-medium mb-2">Vendedor *</label><select value={form.vendedor_id} onChange={(e) => setForm({...form, vendedor_id: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{vendedores.map(v => <option key={v.id} value={v.id}>{v.nome}</option>)}</select></div><div><label className="block text-sm font-medium mb-2">Valor *</label><input type="number" step="0.01" value={form.valor_bruto} onChange={(e) => setForm({...form, valor_bruto: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required /></div><div className="flex gap-3 pt-4"><button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold">Salvar</button><button type="button" onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold">Cancelar</button></div></form></div></div>); }
+        function ModalLigacao({ clientes, vendedores, onSave, onClose }) { const [form, setForm] = useState({cliente_id: '', vendedor_id: '', status: 'tentada'}); return (<div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}><div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '500px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}><h2 className="text-2xl font-bold mb-6">Nova Atividade</h2><form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4"><div><label className="block text-sm font-medium mb-2">Cliente *</label><select value={form.cliente_id} onChange={(e) => setForm({...form, cliente_id: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select></div><div><label className="block text-sm font-medium mb-2">Vendedor *</label><select value={form.vendedor_id} onChange={(e) => setForm({...form, vendedor_id: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg" required><option value="">Selecione...</option>{vendedores.map(v => <option key={v.id} value={v.id}>{v.nome}</option>)}</select></div><div><label className="block text-sm font-medium mb-2">Status *</label><select value={form.status} onChange={(e) => setForm({...form, status: e.target.value})} className="w-full px-4 py-2.5 border rounded-lg"><option value="tentada">Tentada</option><option value="efetivada">Efetivada</option></select></div><div className="flex gap-3 pt-4"><button type="submit" className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-lg font-semibold">Salvar</button><button type="button" onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold">Cancelar</button></div></form></div></div>); }
+        function ModalImport({ onImport, onClose }) { const [file, setFile] = useState(null); return (<div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000}} onClick={onClose}><div style={{background: 'white', borderRadius: '16px', padding: '32px', maxWidth: '400px', width: '100%', margin: '16px'}} onClick={(e) => e.stopPropagation()}><h2 className="text-2xl font-bold mb-6">Importar Excel</h2><div className="border-4 border-dashed border-gray-300 rounded-xl p-12 text-center hover:border-green-500 cursor-pointer" onClick={() => document.getElementById('fileInput').click()}><input type="file" accept=".xlsx,.xls" onChange={(e) => setFile(e.target.files[0])} className="hidden" id="fileInput" /><div className="text-6xl mb-4">📊</div><div className="text-sm text-gray-600 mb-2">Clique para selecionar</div>{file && <div className="text-sm font-semibold text-green-600 mt-3">{file.name}</div>}</div><div className="flex gap-3 mt-6"><button onClick={() => { if(file) onImport(file); }} disabled={!file} className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white py-3 rounded-lg font-semibold">Importar</button><button onClick={onClose} className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 rounded-lg font-semibold">Cancelar</button></div></div></div>); }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>

@@ -1,0 +1,640 @@
+================================================================================
+            DOCUMENTACAO TECNICA COMPLETA - GSD COMERCIAL
+                   Sistema de Gestao de Vendas e CRM
+================================================================================
+Versao: 1.0.0
+Data: Dezembro/2025
+URL: https://gsdcomercial.com.br
+================================================================================
+
+================================================================================
+INDICE
+================================================================================
+1. VISAO GERAL DO SISTEMA
+2. INFRAESTRUTURA E SERVIDOR
+3. ACESSOS E CREDENCIAIS
+4. ARQUITETURA DO SISTEMA
+5. BANCO DE DADOS - ESTRUTURA COMPLETA
+6. API BACKEND - TODAS AS ROTAS
+7. FRONTEND - COMPONENTES
+8. FUNCIONALIDADES DETALHADAS
+9. COMANDOS DE MANUTENCAO
+10. MELHORIAS FUTURAS SUGERIDAS
+
+================================================================================
+1. VISAO GERAL DO SISTEMA
+================================================================================
+
+O GSD Comercial e um sistema completo de CRM (Customer Relationship Management)
+e gestao comercial desenvolvido para gerenciar todo o ciclo de vendas B2B.
+
+PRINCIPAIS MODULOS:
+- Gestao de Clientes Primarios (B2B): Empresas que contratam servicos
+- Gestao de Leads: Contatos vinculados aos clientes primarios
+- Pipeline de Vendas: Funil kanban com drag-and-drop
+- Gestao de Vendedores: Equipe comercial com metas e comissoes
+- Registro de Vendas: Com calculo automatico de comissoes
+- Historico de Ligacoes: Rastreamento de contatos
+- Sistema de Tarefas: Follow-ups e lembretes
+- Relatorios e Dashboards: Metricas e indicadores
+
+PUBLICO ALVO:
+- Empresas de vendas B2B
+- Equipes comerciais
+- Gestores de vendas
+- Organizacoes que trabalham com rifas, captacao, etc.
+
+================================================================================
+2. INFRAESTRUTURA E SERVIDOR
+================================================================================
+
+SERVIDOR:
+- Provedor: Digital Ocean
+- IP Publico: 138.68.8.209
+- Sistema Operacional: Ubuntu 24.04 LTS
+- Tipo: VPS (Droplet)
+- Especificacoes: 1 vCPU, 1GB RAM
+- Regiao: SFO2 (Sao Francisco, EUA)
+
+DOMINIO E SSL:
+- Dominio: gsdcomercial.com.br
+- WWW: www.gsdcomercial.com.br
+- SSL: Lets Encrypt (Certbot)
+- Certificado: /etc/letsencrypt/live/gsdcomercial.com.br/
+- Renovacao: Automatica via Certbot
+
+STACK TECNOLOGICO:
++---------------------+-----------------+----------+
+| Componente          | Tecnologia      | Versao   |
++---------------------+-----------------+----------+
+| Runtime             | Node.js         | 20.19.5  |
+| Gerenciador Pacotes | npm             | 10.8.2   |
+| Banco de Dados      | PostgreSQL      | 16.10    |
+| Web Server          | Nginx           | 1.24.0   |
+| Process Manager     | PM2             | latest   |
+| Backend Framework   | Express.js      | 4.x      |
+| Frontend            | React (Babel)   | 18.x     |
+| CSS Framework       | Tailwind CSS    | 3.x      |
++---------------------+-----------------+----------+
+
+PORTAS E SERVICOS:
++---------------+-------+-----------------------------+
+| Servico       | Porta | Descricao                   |
++---------------+-------+-----------------------------+
+| HTTP          | 80    | Redireciona para HTTPS      |
+| HTTPS         | 443   | Acesso web seguro           |
+| Node.js API   | 3000  | Backend Express (interno)   |
+| PostgreSQL    | 5432  | Banco de dados (interno)    |
++---------------+-------+-----------------------------+
+
+================================================================================
+3. ACESSOS E CREDENCIAIS
+================================================================================
+
+*** INFORMACOES SENSIVEIS - MANTER EM SIGILO ***
+
+ACESSO SSH AO SERVIDOR:
+- Comando: ssh root@138.68.8.209
+- Usuario: root
+- Autenticacao: Chave SSH (configurada na Digital Ocean)
+
+BANCO DE DADOS POSTGRESQL:
+- Host: localhost
+- Porta: 5432
+- Database: sistema_gestao
+- Usuario: gestao_user
+- Senha: senha123
+- Conexao: psql -h localhost -U gestao_user -d sistema_gestao
+
+PAINEL DIGITAL OCEAN:
+- URL: https://cloud.digitalocean.com
+- (Acesso via conta do proprietario)
+
+USUARIOS DO SISTEMA:
+- Perfis disponiveis: admin, gerente, vendedor
+- Senha armazenada com hash bcrypt
+
+================================================================================
+4. ARQUITETURA DO SISTEMA
+================================================================================
+
+ESTRUTURA DE DIRETORIOS:
+/var/www/sistema-gestao/
++-- backend/
+|   +-- server.js                    # API Express (todas as rotas)
++-- index.html                       # Frontend React (519KB)
++-- modelo_importacao_leads.xlsx     # Template importacao
++-- package.json                     # Dependencias
++-- package-lock.json
++-- node_modules/                    # Bibliotecas
+
+FLUXO DE REQUISICOES:
+[Usuario] --HTTPS--> [Nginx :443] --proxy--> [Node.js :3000] --queries--> [PostgreSQL :5432]
+
+CONFIGURACAO NGINX (/etc/nginx/sites-enabled/gsdcomercial):
+server {
+    server_name gsdcomercial.com.br www.gsdcomercial.com.br;
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/gsdcomercial.com.br/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/gsdcomercial.com.br/privkey.pem;
+}
+
+================================================================================
+5. BANCO DE DADOS - ESTRUTURA COMPLETA
+================================================================================
+
+TABELAS DO SISTEMA:
+- usuarios (3 registros)
+- clientes (13 registros) - Clientes Primarios B2B
+- clientes_finais (10 registros) - Leads
+- vendedores (3 registros)
+- vendas (24 registros)
+- ligacoes (47 registros)
+- propostas
+- tarefas
+- metas
+- equipes
+
+--------------------------------------------------------------------------------
+TABELA: usuarios
+--------------------------------------------------------------------------------
+Descricao: Usuarios que acessam o sistema
+| Coluna     | Tipo         | Descricao                    |
+|------------|--------------|------------------------------|
+| id         | SERIAL PK    | Chave primaria               |
+| nome       | VARCHAR(255) | Nome completo                |
+| email      | VARCHAR(255) | Email unico (login)          |
+| senha      | VARCHAR(255) | Senha criptografada (bcrypt) |
+| tipo       | VARCHAR(50)  | Tipo de usuario              |
+| perfil     | VARCHAR(50)  | admin, gerente, vendedor     |
+| status     | VARCHAR(20)  | ativo, inativo               |
+| created_at | TIMESTAMP    | Data de criacao              |
+
+--------------------------------------------------------------------------------
+TABELA: clientes (Clientes Primarios B2B)
+--------------------------------------------------------------------------------
+Descricao: Empresas/organizacoes que contratam servicos
+| Coluna              | Tipo          | Descricao              |
+|---------------------|---------------|------------------------|
+| id                  | SERIAL PK     | Chave primaria         |
+| nome                | VARCHAR(255)  | Razao social           |
+| cnpj                | VARCHAR(50)   | CNPJ da empresa        |
+| email               | VARCHAR(255)  | Email de contato       |
+| telefone            | VARCHAR(20)   | Telefone               |
+| whatsapp            | VARCHAR(20)   | WhatsApp               |
+| endereco_rua        | VARCHAR(255)  | Logradouro             |
+| endereco_numero     | VARCHAR(20)   | Numero                 |
+| endereco_complemento| VARCHAR(255)  | Complemento            |
+| endereco_bairro     | VARCHAR(100)  | Bairro                 |
+| endereco_cidade     | VARCHAR(100)  | Cidade                 |
+| endereco_estado     | VARCHAR(2)    | UF                     |
+| endereco_cep        | VARCHAR(10)   | CEP                    |
+| percentual_comissao | DECIMAL(5,2)  | % comissao padrao      |
+| observacoes         | TEXT          | Notas gerais           |
+| created_at          | TIMESTAMP     | Data de criacao        |
+
+--------------------------------------------------------------------------------
+TABELA: clientes_finais (Leads)
+--------------------------------------------------------------------------------
+Descricao: Contatos/leads vinculados aos clientes primarios
+| Coluna               | Tipo          | Descricao                        |
+|----------------------|---------------|----------------------------------|
+| id                   | SERIAL PK     | Chave primaria                   |
+| codigo               | VARCHAR(50)   | Codigo unico LEAD-YYYYMMDD-NNNNN |
+| nome                 | VARCHAR(255)  | Nome do lead                     |
+| cpf_cnpj             | VARCHAR(20)   | CPF ou CNPJ                      |
+| email                | VARCHAR(255)  | Email                            |
+| telefone             | VARCHAR(20)   | Telefone                         |
+| whatsapp             | VARCHAR(20)   | WhatsApp                         |
+| endereco_*           | VARCHAR       | Campos de endereco               |
+| cliente_primario_id  | INT FK        | Vinculo com cliente B2B          |
+| vendedor_id          | INT FK        | Vendedor responsavel             |
+| etapa_funil          | VARCHAR(50)   | novo,contato,qualificado,etc     |
+| status_contato       | VARCHAR(50)   | nao_contatado, em_andamento      |
+| valor_potencial      | DECIMAL(12,2) | Valor estimado da venda          |
+| temperatura          | VARCHAR(20)   | frio, morno, quente              |
+| origem               | VARCHAR(100)  | Origem do lead                   |
+| data_followup        | TIMESTAMP     | Data proximo contato             |
+| ultima_interacao     | TIMESTAMP     | Ultimo contato                   |
+| motivo_perda         | TEXT          | Se perdido, motivo               |
+| observacoes          | TEXT          | Notas gerais                     |
+| created_at           | TIMESTAMP     | Data de criacao                  |
+
+--------------------------------------------------------------------------------
+TABELA: vendedores
+--------------------------------------------------------------------------------
+Descricao: Equipe comercial
+| Coluna              | Tipo          | Descricao                 |
+|---------------------|---------------|---------------------------|
+| id                  | SERIAL PK     | Chave primaria            |
+| nome                | VARCHAR(255)  | Nome do vendedor          |
+| email               | VARCHAR(255)  | Email                     |
+| telefone            | VARCHAR(20)   | Telefone                  |
+| comissao_percentual | DECIMAL(5,2)  | % de comissao             |
+| meta_mensal         | DECIMAL(12,2) | Meta mensal em R$         |
+| ativo               | BOOLEAN       | Se participa distribuicao |
+| equipe_id           | INT FK        | Equipe                    |
+| usuario_id          | INT FK        | Usuario de login          |
+| created_at          | TIMESTAMP     | Data de criacao           |
+
+--------------------------------------------------------------------------------
+TABELA: vendas
+--------------------------------------------------------------------------------
+Descricao: Registro de vendas realizadas
+| Coluna           | Tipo          | Descricao                |
+|------------------|---------------|--------------------------|
+| id               | SERIAL PK     | Chave primaria           |
+| data             | DATE          | Data da venda            |
+| cliente_id       | INT FK        | Cliente primario         |
+| cliente_final_id | INT FK        | Lead convertido          |
+| vendedor_id      | INT FK        | Vendedor responsavel     |
+| valor_bruto      | DECIMAL(12,2) | Valor da venda           |
+| valor_comissao   | DECIMAL(12,2) | Valor da comissao        |
+| valor_liquido    | DECIMAL(12,2) | Valor - comissao         |
+| tipo             | VARCHAR(50)   | venda, recorrente        |
+| forma_pagamento  | VARCHAR(50)   | pix, cartao, boleto      |
+| parcelas         | INT           | Numero de parcelas       |
+| produto          | VARCHAR(255)  | Produto/servico vendido  |
+| status_pagamento | VARCHAR(50)   | pendente, pago           |
+| recorrente       | BOOLEAN       | Se e venda recorrente    |
+| observacoes      | TEXT          | Notas                    |
+| created_at       | TIMESTAMP     | Data de criacao          |
+
+--------------------------------------------------------------------------------
+TABELA: ligacoes
+--------------------------------------------------------------------------------
+Descricao: Historico de ligacoes/contatos
+| Coluna           | Tipo          | Descricao              |
+|------------------|---------------|------------------------|
+| id               | SERIAL PK     | Chave primaria         |
+| data             | TIMESTAMP     | Data/hora da ligacao   |
+| cliente_id       | INT FK        | Cliente primario       |
+| cliente_final_id | INT FK        | Lead                   |
+| vendedor_id      | INT FK        | Vendedor que ligou     |
+| status           | VARCHAR(50)   | atendeu, nao_atendeu   |
+| duracao          | INT           | Duracao em segundos    |
+| observacoes      | TEXT          | Notas da ligacao       |
+| created_at       | TIMESTAMP     | Data de criacao        |
+
+--------------------------------------------------------------------------------
+TABELA: propostas
+--------------------------------------------------------------------------------
+| Coluna       | Tipo          | Descricao              |
+|--------------|---------------|------------------------|
+| id           | SERIAL PK     | Chave primaria         |
+| titulo       | VARCHAR(255)  | Titulo da proposta     |
+| cliente_id   | INT FK        | Cliente                |
+| vendedor_id  | INT FK        | Vendedor responsavel   |
+| valor_total  | DECIMAL(12,2) | Valor proposto         |
+| status       | VARCHAR(50)   | pendente, aprovada     |
+| observacoes  | TEXT          | Detalhes               |
+
+--------------------------------------------------------------------------------
+TABELA: tarefas
+--------------------------------------------------------------------------------
+| Coluna          | Tipo          | Descricao                |
+|-----------------|---------------|--------------------------|
+| id              | SERIAL PK     | Chave primaria           |
+| lead_id         | INT FK        | Lead relacionado         |
+| usuario_id      | INT FK        | Usuario responsavel      |
+| tipo            | VARCHAR(50)   | ligacao, email, reuniao  |
+| descricao       | TEXT          | Descricao da tarefa      |
+| data_vencimento | TIMESTAMP     | Prazo                    |
+| prioridade      | VARCHAR(20)   | baixa, normal, alta      |
+| status          | VARCHAR(20)   | pendente, concluida      |
+
+--------------------------------------------------------------------------------
+TABELA: metas
+--------------------------------------------------------------------------------
+| Coluna      | Tipo          | Descricao        |
+|-------------|---------------|------------------|
+| id          | SERIAL PK     | Chave primaria   |
+| vendedor_id | INT FK        | Vendedor         |
+| tipo        | VARCHAR(50)   | vendas, ligacoes |
+| valor_meta  | DECIMAL(12,2) | Valor da meta    |
+| mes         | INT           | Mes (1-12)       |
+| ano         | INT           | Ano              |
+
+--------------------------------------------------------------------------------
+TABELA: equipes
+--------------------------------------------------------------------------------
+| Coluna    | Tipo         | Descricao      |
+|-----------|--------------|----------------|
+| id        | SERIAL PK    | Chave primaria |
+| nome      | VARCHAR(255) | Nome da equipe |
+| descricao | TEXT         | Descricao      |
+
+================================================================================
+6. API BACKEND - TODAS AS ROTAS
+================================================================================
+
+ARQUIVO: /var/www/sistema-gestao/backend/server.js
+
+AUTENTICACAO:
+- O sistema usa JWT (JSON Web Token)
+- Login retorna token que deve ser enviado em todas as requisicoes
+- Header: Authorization: Bearer <token>
+
+--------------------------------------------------------------------------------
+ROTAS DE AUTENTICACAO
+--------------------------------------------------------------------------------
+| Metodo | Rota            | Descricao           | Auth |
+|--------|-----------------|---------------------|------|
+| POST   | /api/login      | Fazer login         | Nao  |
+
+Body: { "email": "user@email.com", "senha": "123456" }
+Response: { "token": "jwt...", "usuario": { id, nome, email, perfil } }
+
+--------------------------------------------------------------------------------
+ROTAS DE USUARIOS
+--------------------------------------------------------------------------------
+| Metodo | Rota                | Descricao           | Auth |
+|--------|---------------------|---------------------|------|
+| GET    | /api/usuarios       | Listar todos        | Sim  |
+| POST   | /api/usuarios       | Criar usuario       | Nao  |
+| PUT    | /api/usuarios/:id   | Atualizar           | Sim  |
+| DELETE | /api/usuarios/:id   | Excluir             | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE CLIENTES (PRIMARIOS B2B)
+--------------------------------------------------------------------------------
+| Metodo | Rota            | Descricao           | Auth |
+|--------|-----------------|---------------------|------|
+| GET    | /api/clientes   | Listar todos        | Sim  |
+| POST   | /api/clientes   | Criar cliente       | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE CLIENTES FINAIS (LEADS)
+--------------------------------------------------------------------------------
+| Metodo | Rota                     | Descricao        | Auth |
+|--------|--------------------------|------------------|------|
+| GET    | /api/clientes_finais     | Listar todos     | Sim  |
+| POST   | /api/clientes_finais     | Criar lead       | Sim  |
+| PUT    | /api/clientes_finais/:id | Atualizar lead   | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE VENDEDORES
+--------------------------------------------------------------------------------
+| Metodo | Rota                         | Descricao             | Auth |
+|--------|------------------------------|-----------------------|------|
+| GET    | /api/vendedores              | Listar todos          | Sim  |
+| POST   | /api/vendedores              | Criar vendedor        | Sim  |
+| PUT    | /api/vendedores/:id          | Atualizar             | Sim  |
+| PUT    | /api/vendedores/:id/status   | Ativar/desativar      | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE VENDAS
+--------------------------------------------------------------------------------
+| Metodo | Rota          | Descricao           | Auth |
+|--------|---------------|---------------------|------|
+| GET    | /api/vendas   | Listar todas        | Sim  |
+| POST   | /api/vendas   | Registrar venda     | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE LIGACOES
+--------------------------------------------------------------------------------
+| Metodo | Rota            | Descricao           | Auth |
+|--------|-----------------|---------------------|------|
+| GET    | /api/ligacoes   | Listar todas        | Sim  |
+| POST   | /api/ligacoes   | Registrar ligacao   | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE PROPOSTAS
+--------------------------------------------------------------------------------
+| Metodo | Rota                 | Descricao        | Auth |
+|--------|----------------------|------------------|------|
+| GET    | /api/propostas       | Listar todas     | Sim  |
+| POST   | /api/propostas       | Criar proposta   | Sim  |
+| PUT    | /api/propostas/:id   | Atualizar        | Sim  |
+| DELETE | /api/propostas/:id   | Excluir          | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE TAREFAS
+--------------------------------------------------------------------------------
+| Metodo | Rota              | Descricao        | Auth |
+|--------|-------------------|------------------|------|
+| GET    | /api/tarefas      | Listar todas     | Sim  |
+| POST   | /api/tarefas      | Criar tarefa     | Sim  |
+| PUT    | /api/tarefas/:id  | Atualizar        | Sim  |
+| DELETE | /api/tarefas/:id  | Excluir          | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE EQUIPES E METAS
+--------------------------------------------------------------------------------
+| Metodo | Rota          | Descricao        | Auth |
+|--------|---------------|------------------|------|
+| GET    | /api/equipes  | Listar equipes   | Sim  |
+| POST   | /api/equipes  | Criar equipe     | Sim  |
+| GET    | /api/metas    | Listar metas     | Sim  |
+
+--------------------------------------------------------------------------------
+ROTAS DE GESTAO DE LEADS (MODULO ESPECIAL)
+--------------------------------------------------------------------------------
+| Metodo | Rota                             | Descricao                    | Auth |
+|--------|----------------------------------|------------------------------|------|
+| GET    | /api/leads/sem-vendedor          | Leads nao atribuidos         | Sim  |
+| GET    | /api/leads/relatorio             | Estatisticas por vendedor    | Sim  |
+| POST   | /api/leads/distribuir/quantidade | Distribuir igualmente        | Sim  |
+| POST   | /api/leads/distribuir/valor      | Distribuir por valor         | Sim  |
+| POST   | /api/leads/transferir            | Transferir selecionados      | Sim  |
+| POST   | /api/leads/transferir-todos      | Transferir todos vendedor    | Sim  |
+| POST   | /api/leads/importar              | Importar planilha (antigo)   | Sim  |
+| POST   | /api/leads/validar-planilha      | Validar antes importar       | Sim  |
+| POST   | /api/leads/importar-validado     | Importar com validacao       | Sim  |
+| GET    | /api/leads/modelo-excel          | Download template Excel      | Nao  |
+| DELETE | /api/leads/:id                   | Excluir lead individual      | Sim  |
+| POST   | /api/leads/excluir-selecionados  | Excluir em massa             | Sim  |
+| DELETE | /api/leads/cliente/:clienteId    | Excluir todos do cliente     | Sim  |
+
+================================================================================
+7. FRONTEND - COMPONENTES
+================================================================================
+
+ARQUIVO: /var/www/sistema-gestao/index.html (519KB)
+
+TECNOLOGIAS UTILIZADAS (via CDN):
+- React 18 + ReactDOM
+- Babel Standalone (transpilacao JSX no browser)
+- Tailwind CSS 3
+- SheetJS (XLSX) - leitura de planilhas
+- Lucide Icons
+
+COMPONENTES PRINCIPAIS:
+
+1. App - Componente raiz
+   - Gerencia estado global
+   - Controla navegacao
+   - Carrega dados do backend
+
+2. Login - Tela de autenticacao
+   - Formulario email/senha
+   - Validacao de credenciais
+   - Armazena token no localStorage
+
+3. Dashboard - Visao geral
+   - KPIs principais
+   - Graficos de desempenho
+   - Resumo por periodo
+
+4. Pipeline - Funil de vendas (Kanban)
+   - Colunas: Novo, Contato, Qualificado, Proposta, Fechado, Perdido
+   - Drag-and-drop de cards
+   - Filtros
+
+5. Workspace - Area de trabalho do vendedor
+   - Fila de leads para contato
+   - Registro rapido de ligacoes
+   - Agendamento de tarefas
+   - Registro de vendas
+
+6. GestaoLeads - Gestao avancada de leads
+   - Aba Distribuir: distribuicao entre vendedores
+   - Aba Importar: upload de planilha Excel
+   - Aba Transferir: transferencia entre vendedores
+   - Aba Vendedores: ativar/desativar
+   - Aba Excluir: exclusao em massa
+
+7. Clientes - Cadastro de clientes B2B
+8. Vendedores - Cadastro de vendedores
+9. Relatorios - Relatorios gerenciais
+10. Configuracoes - Configuracoes do sistema
+
+================================================================================
+8. FUNCIONALIDADES DETALHADAS
+================================================================================
+
+8.1 SISTEMA DE LOGIN
+- Usuario acessa https://gsdcomercial.com.br
+- Informa email e senha
+- Sistema valida com bcrypt
+- Retorna token JWT
+- Token armazenado no localStorage
+
+8.2 GESTAO DE CLIENTES PRIMARIOS (B2B)
+- Cadastro completo com CNPJ, endereco, contatos
+- Definicao de percentual de comissao padrao
+- Visualizacao de leads vinculados
+
+8.3 GESTAO DE LEADS
+Etapas do Funil:
+1. Novo - Lead recem cadastrado
+2. Contato - Primeiro contato realizado
+3. Qualificado - Lead com interesse confirmado
+4. Proposta - Proposta enviada
+5. Fechado - Venda realizada
+6. Perdido - Lead nao convertido
+
+Campos Importantes:
+- Codigo unico: LEAD-YYYYMMDD-NNNNN (automatico)
+- Temperatura: frio, morno, quente
+- Valor potencial: estimativa de venda
+- Data follow-up: proximo contato
+
+8.4 SISTEMA DE IMPORTACAO DE LEADS
+Fluxo:
+1. Baixar modelo Excel (/api/leads/modelo-excel)
+2. Preencher planilha com leads
+3. Selecionar cliente primario
+4. Fazer upload do arquivo
+5. Sistema valida automaticamente:
+   - Nome obrigatorio
+   - Duplicidade por telefone
+   - Duplicidade por email
+6. Exibe preview com status:
+   - OK Novo: sera importado
+   - AVISO Duplicado: telefone/email ja existe
+   - ERRO: dados invalidos
+7. Opcao de ignorar duplicados
+8. Confirmacao da importacao
+
+8.5 DISTRIBUICAO DE LEADS
+Por Quantidade: divide igualmente
+Por Valor: equilibra valor total potencial
+
+8.6 TRANSFERENCIA DE LEADS
+- Individual: selecionar leads especificos
+- Em Massa: transferir TODOS de um vendedor
+
+8.7 EXCLUSAO DE LEADS
+- Individual: selecionar e excluir
+- Por Cliente: excluir TODOS do cliente primario
+
+================================================================================
+9. COMANDOS DE MANUTENCAO
+================================================================================
+
+ACESSO AO SERVIDOR:
+ssh root@138.68.8.209
+
+GERENCIAMENTO PM2:
+pm2 status                              # Ver status
+pm2 logs sistema-gestao                 # Ver logs
+pm2 logs sistema-gestao --lines 50      # Ultimas 50 linhas
+pm2 restart sistema-gestao              # Reiniciar
+pm2 stop sistema-gestao                 # Parar
+pm2 start sistema-gestao                # Iniciar
+
+VERIFICACAO DE SINTAXE:
+node --check /var/www/sistema-gestao/backend/server.js
+
+GERENCIAMENTO NGINX:
+nginx -t                                # Testar config
+systemctl restart nginx                 # Reiniciar
+systemctl status nginx                  # Ver status
+tail -50 /var/log/nginx/error.log       # Ver logs erro
+
+BANCO DE DADOS:
+sudo -u postgres psql -d sistema_gestao                    # Acessar console
+sudo -u postgres psql -d sistema_gestao -c "SELECT..."     # Query direto
+pg_dump -U gestao_user sistema_gestao > backup.sql         # Backup
+psql -U gestao_user sistema_gestao < backup.sql            # Restaurar
+
+CERTIFICADO SSL:
+certbot renew                           # Renovar
+certbot certificates                    # Ver certificados
+
+ARQUIVOS IMPORTANTES:
+/var/www/sistema-gestao/backend/server.js      # Backend
+/var/www/sistema-gestao/index.html             # Frontend
+/var/www/sistema-gestao/modelo_importacao_leads.xlsx  # Template Excel
+/etc/nginx/sites-enabled/gsdcomercial          # Config Nginx
+/root/.pm2/logs/sistema-gestao-out.log         # Logs PM2
+/root/.pm2/logs/sistema-gestao-error.log       # Erros PM2
+
+================================================================================
+10. MELHORIAS FUTURAS SUGERIDAS
+================================================================================
+
+PRIORIDADE ALTA:
+1. Separar Frontend do Backend (React com build)
+2. Implementar Refresh Token
+3. Adicionar Logs Estruturados (Winston/Pino)
+4. Backup Automatico do Banco (Cron + S3)
+
+PRIORIDADE MEDIA:
+5. Dashboard com Graficos Avancados
+6. Integracao WhatsApp
+7. Relatorios em PDF
+8. Notificacoes Push
+
+PRIORIDADE BAIXA:
+9. App Mobile (React Native/Flutter)
+10. Integracao com ERPs (Bling, Tiny, Omie)
+11. IA para Qualificacao de Leads
+12. Gamificacao (Ranking, Badges)
+
+================================================================================
+FIM DA DOCUMENTACAO
+================================================================================
+Documento gerado em: Dezembro/2025
+Sistema: GSD Comercial v1.0.0
+URL: https://gsdcomercial.com.br
+================================================================================

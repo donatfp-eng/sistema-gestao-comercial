@@ -13,7 +13,7 @@ const NET2PHONE_API_KEY = '5K/+KzVpPgNBKTaimXqkg3dJ5HT7CT03wc5jI0uyHYTFhkmV0g63u
 const NET2PHONE_API_URL = 'https://api.n2p.io/v2';
 
 const pool = new Pool({
-    user: 'postgres',
+    user: 'gestao_user',
     host: 'localhost',
     database: 'sistema_gestao',
     password: 'senha123',
@@ -963,7 +963,7 @@ app.post('/api/whatsapp/enviar', auth, async (req, res) => {
           });
           result = await response.json();
           console.log('Resposta WasenderAPI:', JSON.stringify(result));
-          result.messageId = result.messageId || result.id || ('wasender_' + Date.now());
+          result.messageId = result.data && result.data.msgId ? ('wasender_' + result.data.msgId) : (result.messageId || result.id || ('wasender_' + Date.now()));
       } else {
           console.log('>>> ENVIANDO VIA Z-API - Instance:', ZAPI_INSTANCE_ID);
           const response = await fetch('https://api.z-api.io/instances/' + ZAPI_INSTANCE_ID + '/token/' + ZAPI_TOKEN + '/send-text', {
@@ -2397,7 +2397,46 @@ app.post('/api/whatsapp/enviar-video', auth, async (req, res) => {
 app.post('/api/webhook/wasender', async (req, res) => {
     try {
         const data = req.body;
-        console.log('Webhook WasenderAPI:', JSON.stringify(data).substring(0, 500));
+        console.log('Webhook WasenderAPI evento:', data.event);
+        
+        // STATUS UPDATE (messages.update) - Status codes: 2=SENT, 3=DELIVERED, 4=READ
+        if (data.event === 'messages.update' && data.data) {
+            const msgId = data.data.key ? data.data.key.id : null;
+            const statusCode = data.data.status !== undefined ? data.data.status : (data.data.update ? data.data.update.status : null);
+            if (msgId && statusCode !== null) {
+                let status = 'enviada';
+                if (statusCode === 3) status = 'entregue';
+                if (statusCode === 4 || statusCode === 5) status = 'lida';
+                if (statusCode === 0) status = 'erro';
+                await pool.query("UPDATE whatsapp_mensagens SET status = $1 WHERE message_id = $2 AND (status = 'enviada' OR (status = 'entregue' AND $1 = 'lida'))", [status, msgId]);
+                console.log('WasenderAPI Status:', msgId, '-> code:', statusCode, '->', status);
+            }
+        }
+        
+        // MESSAGE SENT - Atualizar message_id
+        if (data.event === 'message.sent' && data.data && data.data.result && data.data.result.key) {
+            const realMsgId = data.data.result.key.id;
+            const wasenderMsgId = data.data.msgId;
+            if (realMsgId && wasenderMsgId) {
+                await pool.query("UPDATE whatsapp_mensagens SET message_id = $1 WHERE message_id LIKE $2", [realMsgId, 'wasender_' + wasenderMsgId + '%']);
+                console.log('WasenderAPI ID atualizado:', wasenderMsgId, '->', realMsgId);
+            }
+        }
+        
+        // MESSAGE RECEIVED
+        if (data.event === 'messages.received' && data.data && data.data.messages) {
+            const msg = data.data.messages;
+            const key = msg.key || {};
+            const telefone = key.cleanedSenderPn || key.remoteJid || '';
+            const texto = msg.messageBody || '';
+            const msgId = key.id || ('wasender_' + Date.now());
+            if (telefone && texto) {
+                const tel = telefone.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/\D/g, '');
+                await pool.query("INSERT INTO whatsapp_mensagens (message_id, telefone, mensagem, tipo, direcao, status, instancia_id) VALUES ($1, $2, $3, 'text', 'recebida', 'recebida', 2) ON CONFLICT (message_id) DO NOTHING", [msgId, tel, texto]);
+                console.log('WasenderAPI Mensagem recebida de:', tel);
+            }
+        }
+        
         res.status(200).json({ success: true });
     } catch (error) { console.error('Erro webhook WasenderAPI:', error); res.status(200).json({ success: true }); }
 });

@@ -1,0 +1,171 @@
+﻿
+// ==================== INTEGRACAO WASENDERAPI ====================
+
+app.post('/api/webhook/wasender', async (req, res) => {
+    try {
+        const data = req.body;
+        console.log('Webhook WasenderAPI:', JSON.stringify(data).substring(0, 500));
+        const sessionId = req.headers['x-session-id'] || data.sessionId;
+        let instanciaId = null;
+        if (sessionId) {
+            const instResult = await pool.query("SELECT id FROM whatsapp_instancias WHERE instance_id = $1 AND tipo_api = 'wasender'", [sessionId]);
+            if (instResult.rows.length > 0) instanciaId = instResult.rows[0].id;
+        }
+        if (data.event === 'messages.received' && data.data && data.data.messages) {
+            const msg = data.data.messages;
+            const key = msg.key || {};
+            const messageId = key.id || 'wasender_' + Date.now();
+            const fromMe = key.fromMe || false;
+            const remoteJid = key.remoteJid || '';
+            const telefone = key.cleanedSenderPn || remoteJid.replace('@s.whatsapp.net', '').replace('@lid', '');
+            const mensagem = msg.messageBody || (msg.message && msg.message.conversation) || '';
+            const isGrupo = remoteJid.includes('@g.us');
+            const nomeGrupo = isGrupo ? (data.data.groupName || remoteJid) : null;
+            let leadId = null, vendedorId = null;
+            if (!isGrupo && telefone) {
+                const leadResult = await pool.query("SELECT id, vendedor_id FROM clientes_finais WHERE telefone LIKE $1 OR whatsapp LIKE $1 LIMIT 1", ['%' + telefone.slice(-8) + '%']);
+                if (leadResult.rows.length > 0) { leadId = leadResult.rows[0].id; vendedorId = leadResult.rows[0].vendedor_id; }
+            }
+            let tipo = 'text', arquivoUrl = null;
+            const message = msg.message || {};
+            if (message.imageMessage) { tipo = 'image'; arquivoUrl = message.imageMessage.url; }
+            else if (message.videoMessage) { tipo = 'video'; arquivoUrl = message.videoMessage.url; }
+            else if (message.audioMessage) { tipo = 'audio'; arquivoUrl = message.audioMessage.url; }
+            else if (message.documentMessage) { tipo = 'document'; arquivoUrl = message.documentMessage.url; }
+            await pool.query("INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, is_grupo, nome_grupo, arquivo_url, status, instancia_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (message_id) DO NOTHING", [messageId, telefone, key.pushName || telefone, mensagem, tipo, fromMe ? 'enviada' : 'recebida', leadId, vendedorId, isGrupo, nomeGrupo, arquivoUrl, 'RECEIVED', instanciaId]);
+        }
+        if (data.event === 'message.sent' && data.data) {
+            const key = data.data.key || {};
+            if (key.id) await pool.query("UPDATE whatsapp_mensagens SET status = 'SENT' WHERE message_id = $1", [key.id]);
+        }
+        if (data.event === 'messages.update' || data.event === 'message-receipt.update') {
+            const key = (data.data && data.data.key) || {};
+            const status = data.data && data.data.update && data.data.update.status;
+            if (key.id && status) {
+                const statusMap = { 2: 'SENT', 3: 'DELIVERED', 4: 'READ' };
+                await pool.query("UPDATE whatsapp_mensagens SET status = $1 WHERE message_id = $2", [statusMap[status] || status, key.id]);
+            }
+        }
+        res.status(200).json({ success: true });
+    } catch (error) { console.error('Erro webhook WasenderAPI:', error); res.status(200).json({ success: true }); }
+});
+
+async function enviarWasender(instancia, telefone, payload) {
+    const fetch = require('node-fetch');
+    const response = await fetch('https://api.wasenderapi.com/api/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + instancia.token },
+        body: JSON.stringify({ sessionId: instancia.instance_id, to: telefone, ...payload })
+    });
+    return await response.json();
+}
+
+app.post('/api/whatsapp/enviar-instancia', auth, async (req, res) => {
+    try {
+        const { instancia_id, telefone, mensagem, lead_id, vendedor_id, nome_contato } = req.body;
+        const inst = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1', [instancia_id]);
+        if (inst.rows.length === 0) return res.status(404).json({ error: 'Instancia nao encontrada' });
+        const instancia = inst.rows[0];
+        let tel = telefone.replace(/\D/g, '');
+        if (tel.length > 0 && tel.substring(0,2) !== '55') tel = '55' + tel;
+        let result;
+        const fetch = require('node-fetch');
+        if (instancia.tipo_api === 'wasender') {
+            result = await enviarWasender(instancia, tel, { text: mensagem });
+        } else {
+            const response = await fetch('https://api.z-api.io/instances/' + instancia.instance_id + '/token/' + instancia.token + '/send-text', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Client-Token': instancia.client_token || '' },
+                body: JSON.stringify({ phone: tel, message: mensagem })
+            });
+            result = await response.json();
+        }
+        const messageId = result.zapiId || result.messageId || result.id || ('msg_' + Date.now());
+        if (messageId) {
+            await pool.query("INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, instancia_id) VALUES ($1, $2, $3, $4, 'text', 'enviada', $5, $6, 'SENT', $7)", [messageId, tel, nome_contato || '', mensagem, lead_id || null, vendedor_id || null, instancia_id]);
+            if (lead_id) await pool.query("UPDATE clientes_finais SET ultima_interacao = NOW() WHERE id = $1", [lead_id]);
+            res.json({ success: true, messageId });
+        } else { res.status(400).json({ error: 'Erro ao enviar', details: result }); }
+    } catch (error) { console.error('Erro enviar instancia:', error); res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/whatsapp/enviar-imagem-instancia', auth, async (req, res) => {
+    try {
+        const { instancia_id, telefone, imageUrl, caption, lead_id, vendedor_id, nome_contato } = req.body;
+        const inst = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1', [instancia_id]);
+        if (inst.rows.length === 0) return res.status(404).json({ error: 'Instancia nao encontrada' });
+        const instancia = inst.rows[0];
+        let tel = telefone.replace(/\D/g, '');
+        if (tel.length > 0 && tel.substring(0,2) !== '55') tel = '55' + tel;
+        let result;
+        const fetch = require('node-fetch');
+        if (instancia.tipo_api === 'wasender') {
+            result = await enviarWasender(instancia, tel, { imageUrl: imageUrl, text: caption || '' });
+        } else {
+            const response = await fetch('https://api.z-api.io/instances/' + instancia.instance_id + '/token/' + instancia.token + '/send-image', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Client-Token': instancia.client_token || '' },
+                body: JSON.stringify({ phone: tel, image: imageUrl, caption: caption || '' })
+            });
+            result = await response.json();
+        }
+        const messageId = result.zapiId || result.messageId || result.id || ('msg_' + Date.now());
+        if (messageId) {
+            await pool.query("INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, arquivo_url, instancia_id) VALUES ($1, $2, $3, $4, 'image', 'enviada', $5, $6, 'SENT', $7, $8)", [messageId, tel, nome_contato || '', caption || '[Imagem]', lead_id || null, vendedor_id || null, imageUrl, instancia_id]);
+            res.json({ success: true, messageId });
+        } else { res.status(400).json({ error: 'Erro ao enviar', details: result }); }
+    } catch (error) { console.error('Erro enviar imagem instancia:', error); res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/whatsapp/enviar-documento-instancia', auth, async (req, res) => {
+    try {
+        const { instancia_id, telefone, documentUrl, documentName, caption, lead_id, vendedor_id, nome_contato } = req.body;
+        const inst = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1', [instancia_id]);
+        if (inst.rows.length === 0) return res.status(404).json({ error: 'Instancia nao encontrada' });
+        const instancia = inst.rows[0];
+        let tel = telefone.replace(/\D/g, '');
+        if (tel.length > 0 && tel.substring(0,2) !== '55') tel = '55' + tel;
+        let result;
+        const fetch = require('node-fetch');
+        if (instancia.tipo_api === 'wasender') {
+            result = await enviarWasender(instancia, tel, { documentUrl: documentUrl, text: caption || '', fileName: documentName });
+        } else {
+            const response = await fetch('https://api.z-api.io/instances/' + instancia.instance_id + '/token/' + instancia.token + '/send-document/pdf', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Client-Token': instancia.client_token || '' },
+                body: JSON.stringify({ phone: tel, document: documentUrl, fileName: documentName || 'documento.pdf' })
+            });
+            result = await response.json();
+        }
+        const messageId = result.zapiId || result.messageId || result.id || ('msg_' + Date.now());
+        if (messageId) {
+            await pool.query("INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, arquivo_url, arquivo_nome, instancia_id) VALUES ($1, $2, $3, $4, 'document', 'enviada', $5, $6, 'SENT', $7, $8, $9)", [messageId, tel, nome_contato || '', caption || '[Documento]', lead_id || null, vendedor_id || null, documentUrl, documentName, instancia_id]);
+            res.json({ success: true, messageId });
+        } else { res.status(400).json({ error: 'Erro ao enviar', details: result }); }
+    } catch (error) { console.error('Erro enviar documento instancia:', error); res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/whatsapp/enviar-audio-instancia', auth, async (req, res) => {
+    try {
+        const { instancia_id, telefone, audioUrl, lead_id, vendedor_id, nome_contato } = req.body;
+        const inst = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1', [instancia_id]);
+        if (inst.rows.length === 0) return res.status(404).json({ error: 'Instancia nao encontrada' });
+        const instancia = inst.rows[0];
+        let tel = telefone.replace(/\D/g, '');
+        if (tel.length > 0 && tel.substring(0,2) !== '55') tel = '55' + tel;
+        let result;
+        const fetch = require('node-fetch');
+        if (instancia.tipo_api === 'wasender') {
+            result = await enviarWasender(instancia, tel, { audioUrl: audioUrl });
+        } else {
+            const response = await fetch('https://api.z-api.io/instances/' + instancia.instance_id + '/token/' + instancia.token + '/send-audio', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Client-Token': instancia.client_token || '' },
+                body: JSON.stringify({ phone: tel, audio: audioUrl })
+            });
+            result = await response.json();
+        }
+        const messageId = result.zapiId || result.messageId || result.id || ('msg_' + Date.now());
+        if (messageId) {
+            await pool.query("INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, arquivo_url, instancia_id) VALUES ($1, $2, $3, $4, 'audio', 'enviada', $5, $6, 'SENT', $7, $8)", [messageId, tel, nome_contato || '', '[Audio]', lead_id || null, vendedor_id || null, audioUrl, instancia_id]);
+            res.json({ success: true, messageId });
+        } else { res.status(400).json({ error: 'Erro ao enviar', details: result }); }
+    } catch (error) { console.error('Erro enviar audio instancia:', error); res.status(500).json({ error: error.message }); }
+});
+

@@ -1153,7 +1153,7 @@
             const [mensagens, setMensagens] = React.useState([]);
             const [novaMensagem, setNovaMensagem] = React.useState("");
             const [loading, setLoading] = React.useState(false);
-            const [enviando, setEnviando] = React.useState(false);
+            const [enviando, setEnviando] = React.useState(false); const [instanciaEnvio, setInstanciaEnvio] = React.useState(1);
             const [arquivoPrevia, setArquivoPrevia] = React.useState(null);
             const [legendaArquivo, setLegendaArquivo] = React.useState("");
             const [gravando, setGravando] = React.useState(false);
@@ -1261,8 +1261,7 @@
                             telefone: conversaSelecionada.telefone, nome_contato: conversaSelecionada.nome_contato,
                             mensagem: novaMensagem,
                             lead_id: conversaSelecionada.lead_id,
-                            vendedor_id: usuarioLogado.vendedor_id || null
-                        })
+                            vendedor_id: usuarioLogado.vendedor_id || null, instancia_id: instanciaEnvio || 1 })
                     });
                     const data = await res.json();
                     if (res.ok && data.success) {
@@ -1627,9 +1626,7 @@
                                         )
                                     )
                                 ),
-                                React.createElement("textarea", {
-                                    
-                                    value: novaMensagem,
+                                React.createElement("select", { value: instanciaEnvio, onChange: function(e) { setInstanciaEnvio(parseInt(e.target.value)); }, className: "border rounded-lg px-2 py-2 text-sm bg-white", title: "Enviar por" }, React.createElement("option", { value: 1 }, "Principal"), React.createElement("option", { value: 2 }, "Vendas II")), React.createElement("textarea", { value: novaMensagem,
                                     onChange: function(e) { setNovaMensagem(e.target.value); },
                                     onKeyDown: function(e) { if (e.key === "Enter" && !e.shiftKey && !enviando) { e.preventDefault(); enviarMensagem(); } },
                                     placeholder: "Digite uma mensagem...",

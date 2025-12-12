@@ -2367,3 +2367,562 @@ app.post('/api/whatsapp/enviar-video', auth, async (req, res) => {
     res.status(500).json({ error: 'Erro ao enviar vídeo' });
   }
 });
+
+
+// ==================== NOVAS FUNCOES Z-API ====================
+
+// 1. APAGAR MENSAGEM
+app.delete('/api/whatsapp/mensagem', auth, async (req, res) => {
+    try {
+        const { messageId, phone } = req.query;
+        if (!messageId || !phone) return res.status(400).json({ error: 'messageId e phone obrigatórios' });
+        
+        const fetch = require('node-fetch');
+        const url = 'https://api.z-api.io/instances/' + ZAPI_INSTANCE_ID + '/token/' + ZAPI_TOKEN + '/messages?messageId=' + messageId + '&phone=' + phone + '&owner=true';
+        
+        const response = await fetch(url, {
+            method: 'DELETE',
+            headers: { 'Client-Token': ZAPI_CLIENT_TOKEN }
+        });
+        
+        const result = await response.json();
+        console.log('Apagar mensagem:', result);
+        
+        if (response.ok) {
+            // Marcar como apagada no banco
+            await pool.query("UPDATE whatsapp_mensagens SET mensagem = '[Mensagem apagada]', tipo = 'deleted' WHERE message_id = $1", [messageId]);
+            res.json({ success: true });
+        } else {
+            res.status(400).json({ error: 'Erro ao apagar', details: result });
+        }
+    } catch (error) {
+        console.error('Erro ao apagar mensagem:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 2. ENVIAR REACAO (emoji)
+app.post('/api/whatsapp/reagir', auth, async (req, res) => {
+    try {
+        const { phone, messageId, emoji } = req.body;
+        if (!phone || !messageId || !emoji) return res.status(400).json({ error: 'phone, messageId e emoji obrigatórios' });
+        
+        const fetch = require('node-fetch');
+        const response = await fetch('https://api.z-api.io/instances/' + ZAPI_INSTANCE_ID + '/token/' + ZAPI_TOKEN + '/send-reaction', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN },
+            body: JSON.stringify({ phone, messageId, reaction: emoji })
+        });
+        
+        const result = await response.json();
+        console.log('Reação enviada:', result);
+        
+        if (response.ok) {
+            res.json({ success: true });
+        } else {
+            res.status(400).json({ error: 'Erro ao reagir', details: result });
+        }
+    } catch (error) {
+        console.error('Erro ao enviar reação:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 3. RESPONDER MENSAGEM (quote/reply)
+app.post('/api/whatsapp/responder', auth, async (req, res) => {
+    try {
+        const { telefone, mensagem, quotedMessageId, lead_id, vendedor_id, nome_contato } = req.body;
+        if (!telefone || !mensagem || !quotedMessageId) return res.status(400).json({ error: 'telefone, mensagem e quotedMessageId obrigatórios' });
+        
+        let tel = telefone;
+        if (!tel.includes("@") && !tel.includes("-group") && tel.length <= 15) {
+            tel = tel.replace(/\D/g, "");
+            if (tel.length > 0 && tel.substring(0,2) !== "55") tel = "55" + tel;
+        }
+        
+        const fetch = require('node-fetch');
+        const response = await fetch('https://api.z-api.io/instances/' + ZAPI_INSTANCE_ID + '/token/' + ZAPI_TOKEN + '/send-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN },
+            body: JSON.stringify({ phone: tel, message: mensagem, messageId: quotedMessageId })
+        });
+        
+        const result = await response.json();
+        console.log('Resposta enviada:', result);
+        
+        if (result.zapiId || result.messageId) {
+            await pool.query(
+                "INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, quoted_message_id) VALUES ($1, $2, $3, $4, 'text', 'enviada', $5, $6, 'enviada', $7)",
+                [result.zapiId || result.messageId, tel, nome_contato || "", mensagem, lead_id || null, vendedor_id || null, quotedMessageId]
+            );
+            if (lead_id) { await pool.query("UPDATE clientes_finais SET ultima_interacao = NOW() WHERE id = $1", [lead_id]); }
+            res.json({ success: true, messageId: result.zapiId || result.messageId });
+        } else {
+            res.status(400).json({ error: 'Erro ao responder', details: result });
+        }
+    } catch (error) {
+        console.error('Erro ao responder mensagem:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 4. FIXAR/DESAFIXAR MENSAGEM
+app.post('/api/whatsapp/fixar', auth, async (req, res) => {
+    try {
+        const { phone, messageId, duration } = req.body;
+        if (!phone || !messageId) return res.status(400).json({ error: 'phone e messageId obrigatórios' });
+        
+        const fetch = require('node-fetch');
+        const response = await fetch('https://api.z-api.io/instances/' + ZAPI_INSTANCE_ID + '/token/' + ZAPI_TOKEN + '/pin-message', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN },
+            body: JSON.stringify({ phone, messageId, time: duration || 604800 }) // 7 dias padrão
+        });
+        
+        const result = await response.json();
+        console.log('Fixar mensagem:', result);
+        
+        if (response.ok) {
+            await pool.query("UPDATE whatsapp_mensagens SET fixada = true WHERE message_id = $1", [messageId]);
+            res.json({ success: true });
+        } else {
+            res.status(400).json({ error: 'Erro ao fixar', details: result });
+        }
+    } catch (error) {
+        console.error('Erro ao fixar mensagem:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 5. MARCAR COMO LIDA
+app.post('/api/whatsapp/marcar-lida', auth, async (req, res) => {
+    try {
+        const { phone, messageId } = req.body;
+        if (!phone || !messageId) return res.status(400).json({ error: 'phone e messageId obrigatórios' });
+        
+        const fetch = require('node-fetch');
+        const response = await fetch('https://api.z-api.io/instances/' + ZAPI_INSTANCE_ID + '/token/' + ZAPI_TOKEN + '/read-message', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN },
+            body: JSON.stringify({ phone, messageId })
+        });
+        
+        const result = await response.json();
+        console.log('Marcar como lida:', result);
+        
+        if (response.ok) {
+            res.json({ success: true });
+        } else {
+            res.status(400).json({ error: 'Erro ao marcar como lida', details: result });
+        }
+    } catch (error) {
+        console.error('Erro ao marcar como lida:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== FIM NOVAS FUNCOES Z-API ====================
+
+
+// ENVIAR IMAGEM COM INSTÂNCIA ESPECÍFICA
+app.post('/api/whatsapp/enviar-imagem-instancia', auth, async (req, res) => {
+    try {
+        const { telefone, imageUrl, caption, lead_id, vendedor_id, nome_contato, instancia_id } = req.body;
+        if (!telefone || !imageUrl || !instancia_id) return res.status(400).json({ error: 'Telefone, imagem e instancia_id obrigatórios' });
+        
+        const instResult = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1 AND ativo = true', [instancia_id]);
+        if (instResult.rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+        
+        const inst = instResult.rows[0];
+        let tel = telefone.replace(/\D/g, "");
+        if (!tel.startsWith('55') && tel.length <= 11) tel = '55' + tel;
+        
+        const fetch = require('node-fetch');
+        const response = await fetch('https://api.z-api.io/instances/' + inst.instance_id + '/token/' + inst.token + '/send-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': inst.client_token || '' },
+            body: JSON.stringify({ phone: tel, image: imageUrl, caption: caption || '' })
+        });
+        
+        const result = await response.json();
+        if (result.zapiId || result.messageId) {
+            await pool.query(
+                "INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, arquivo_url, instancia_id) VALUES ($1, $2, $3, $4, 'image', 'enviada', $5, $6, 'enviada', $7, $8)",
+                [result.zapiId || result.messageId, tel, nome_contato || "", caption || "[Imagem]", lead_id || null, vendedor_id || null, imageUrl, instancia_id]
+            );
+            res.json({ success: true, messageId: result.zapiId || result.messageId });
+        } else {
+            res.status(400).json({ error: 'Erro ao enviar imagem', details: result });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ENVIAR DOCUMENTO COM INSTÂNCIA ESPECÍFICA
+app.post('/api/whatsapp/enviar-documento-instancia', auth, async (req, res) => {
+    try {
+        const { telefone, documentUrl, documentName, caption, lead_id, vendedor_id, nome_contato, instancia_id } = req.body;
+        if (!telefone || !documentUrl || !instancia_id) return res.status(400).json({ error: 'Telefone, documento e instancia_id obrigatórios' });
+        
+        const instResult = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1 AND ativo = true', [instancia_id]);
+        if (instResult.rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+        
+        const inst = instResult.rows[0];
+        let tel = telefone.replace(/\D/g, "");
+        if (!tel.startsWith('55') && tel.length <= 11) tel = '55' + tel;
+        
+        const ext = (documentName || 'documento.pdf').split('.').pop().toLowerCase();
+        const endpoint = '/send-document/' + (['pdf','doc','docx','xls','xlsx','txt','csv','ppt','pptx'].includes(ext) ? ext : 'pdf');
+        
+        const fetch = require('node-fetch');
+        const response = await fetch('https://api.z-api.io/instances/' + inst.instance_id + '/token/' + inst.token + endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': inst.client_token || '' },
+            body: JSON.stringify({ phone: tel, document: documentUrl, fileName: documentName || 'documento.pdf', caption: caption || '' })
+        });
+        
+        const result = await response.json();
+        if (result.zapiId || result.messageId) {
+            await pool.query(
+                "INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, arquivo_url, arquivo_nome, instancia_id) VALUES ($1, $2, $3, $4, 'document', 'enviada', $5, $6, 'enviada', $7, $8, $9)",
+                [result.zapiId || result.messageId, tel, nome_contato || "", "[Documento] " + (documentName || "documento.pdf"), lead_id || null, vendedor_id || null, documentUrl, documentName, instancia_id]
+            );
+            res.json({ success: true, messageId: result.zapiId || result.messageId });
+        } else {
+            res.status(400).json({ error: 'Erro ao enviar documento', details: result });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ENVIAR ÁUDIO COM INSTÂNCIA ESPECÍFICA
+app.post('/api/whatsapp/enviar-audio-instancia', auth, async (req, res) => {
+    try {
+        const { telefone, audioUrl, lead_id, vendedor_id, nome_contato, instancia_id } = req.body;
+        if (!telefone || !audioUrl || !instancia_id) return res.status(400).json({ error: 'Telefone, áudio e instancia_id obrigatórios' });
+        
+        const instResult = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1 AND ativo = true', [instancia_id]);
+        if (instResult.rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+        
+        const inst = instResult.rows[0];
+        let tel = telefone.replace(/\D/g, "");
+        if (!tel.startsWith('55') && tel.length <= 11) tel = '55' + tel;
+        
+        const fetch = require('node-fetch');
+        const response = await fetch('https://api.z-api.io/instances/' + inst.instance_id + '/token/' + inst.token + '/send-audio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': inst.client_token || '' },
+            body: JSON.stringify({ phone: tel, audio: audioUrl })
+        });
+        
+        const result = await response.json();
+        if (result.zapiId || result.messageId) {
+            await pool.query(
+                "INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, arquivo_url, instancia_id) VALUES ($1, $2, $3, $4, 'audio', 'enviada', $5, $6, 'enviada', $7, $8)",
+                [result.zapiId || result.messageId, tel, nome_contato || "", "[Áudio]", lead_id || null, vendedor_id || null, audioUrl, instancia_id]
+            );
+            res.json({ success: true, messageId: result.zapiId || result.messageId });
+        } else {
+            res.status(400).json({ error: 'Erro ao enviar áudio', details: result });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// WEBHOOK MULTI-INSTÂNCIA - Identificar qual instância recebeu
+app.post('/api/webhook/whatsapp/:instancia_id', async (req, res) => {
+    try {
+        const { instancia_id } = req.params;
+        const data = req.body;
+        console.log('Webhook Instância ' + instancia_id + ':', JSON.stringify(data).substring(0, 300));
+        
+        // Verificar se instância existe
+        const instResult = await pool.query('SELECT id FROM whatsapp_instancias WHERE id = $1', [instancia_id]);
+        const instanciaIdReal = instResult.rows.length > 0 ? instResult.rows[0].id : null;
+        
+        if (data.type === "MessageStatusCallback" && data.ids && data.ids.length > 0) {
+            const status = data.status;
+            for (const msgId of data.ids) {
+                await pool.query("UPDATE whatsapp_mensagens SET status = $1 WHERE message_id = $2", [status, msgId]);
+            }
+            return res.status(200).json({ success: true });
+        }
+        
+        if (!data.phone) return res.status(200).json({ success: true });
+        
+        let telefone = data.phone;
+        const isLid = telefone.includes("@lid");
+        if (!isLid) {
+            telefone = telefone.replace(/\D/g, "");
+            if (telefone.length > 15 && !telefone.startsWith("55") && !data.isGroup) {
+                return res.status(200).json({ success: true });
+            }
+        }
+        
+        const messageId = data.messageId || Date.now().toString();
+        const isGrupo = data.isGroup || false;
+        const nomeGrupo = isGrupo ? (data.chatName || 'Grupo') : null;
+        const fromMe = data.fromMe || false;
+        
+        let tipo = 'text';
+        let mensagem = '';
+        let arquivoUrl = null;
+        
+        if (data.text) { tipo = 'text'; mensagem = data.text.message || data.text; }
+        else if (data.image) { tipo = 'image'; mensagem = data.image.caption || '[Imagem]'; arquivoUrl = data.image.imageUrl; }
+        else if (data.audio) { tipo = 'audio'; mensagem = '[Áudio]'; arquivoUrl = data.audio.audioUrl; }
+        else if (data.document) { tipo = 'document'; mensagem = '[Documento] ' + (data.document.fileName || ''); arquivoUrl = data.document.documentUrl; }
+        else if (data.video) { tipo = 'video'; mensagem = data.video.caption || '[Vídeo]'; arquivoUrl = data.video.videoUrl; }
+        else if (data.sticker) { tipo = 'sticker'; mensagem = '[Figurinha]'; arquivoUrl = data.sticker.stickerUrl; }
+        else { return res.status(200).json({ success: true }); }
+        
+        let nomeExistente = null;
+        if (!isGrupo) {
+            const nomeResult = await pool.query("SELECT nome_contato FROM whatsapp_mensagens WHERE telefone = $1 AND nome_contato != $1 AND nome_contato IS NOT NULL AND nome_contato != '' LIMIT 1", [telefone]);
+            if (nomeResult.rows.length > 0) nomeExistente = nomeResult.rows[0].nome_contato;
+        }
+        const nomeContato = isGrupo ? (data.senderName || 'Participante') : (nomeExistente || (fromMe ? data.chatName : data.senderName) || data.chatName || '');
+        
+        let leadId = null;
+        let vendedorId = null;
+        if (!isGrupo) {
+            const conversaExistente = await pool.query(
+                "SELECT vendedor_id FROM whatsapp_mensagens WHERE telefone = $1 AND vendedor_id IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                [telefone]
+            );
+            if (conversaExistente.rows.length > 0) vendedorId = conversaExistente.rows[0].vendedor_id;
+            
+            if (!vendedorId) {
+                const leadResult = await pool.query(
+                    "SELECT id, vendedor_id FROM clientes_finais WHERE telefone LIKE $1 OR whatsapp LIKE $1 LIMIT 1",
+                    ["%" + telefone.slice(-8) + "%"]
+                );
+                if (leadResult.rows.length > 0) {
+                    leadId = leadResult.rows[0].id;
+                    vendedorId = leadResult.rows[0].vendedor_id;
+                }
+            }
+        }
+        
+        const nomeRemetente = fromMe ? (data.senderName || 'Você') : (data.senderName || '');
+        await pool.query(
+            "INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, is_grupo, nome_grupo, arquivo_url, status, nome_remetente, instancia_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (message_id) DO UPDATE SET status = EXCLUDED.status",
+            [messageId, telefone, nomeContato, mensagem, tipo, fromMe ? 'enviada' : 'recebida', leadId, vendedorId, isGrupo, nomeGrupo, arquivoUrl, data.status || 'SENT', nomeRemetente, instanciaIdReal]
+        );
+        
+        res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('Erro webhook multi:', error);
+        res.status(200).json({ success: true });
+    }
+});
+
+// STATUS DE TODAS AS INSTÂNCIAS
+app.get('/api/whatsapp/instancias-status', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM whatsapp_instancias WHERE ativo = true ORDER BY id');
+        const instancias = result.rows;
+        const fetch = require('node-fetch');
+        
+        const statusPromises = instancias.map(async (inst) => {
+            try {
+                const response = await fetch('https://api.z-api.io/instances/' + inst.instance_id + '/token/' + inst.token + '/status', {
+                    method: 'GET',
+                    headers: { 'Client-Token': inst.client_token || '' }
+                });
+                const data = await response.json();
+                return { ...inst, connected: data.connected, smartphoneConnected: data.smartphoneConnected };
+            } catch (e) {
+                return { ...inst, connected: false, error: e.message };
+            }
+        });
+        
+        const instanciasComStatus = await Promise.all(statusPromises);
+        res.json(instanciasComStatus);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== FIM SISTEMA MULTI-INSTANCIA ====================
+
+
+// ==================== SISTEMA MULTI-INSTANCIA WHATSAPP ====================
+
+// Associar vendedor a instância
+app.post('/api/vendedor-instancia', auth, async (req, res) => {
+    try {
+        const { vendedor_id, instancia_id } = req.body;
+        const result = await pool.query(
+            'INSERT INTO vendedor_instancia (vendedor_id, instancia_id) VALUES ($1, $2) ON CONFLICT (vendedor_id, instancia_id) DO NOTHING RETURNING *',
+            [vendedor_id, instancia_id]
+        );
+        res.json({ success: true, data: result.rows[0] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Remover associação vendedor-instância
+app.delete('/api/vendedor-instancia', auth, async (req, res) => {
+    try {
+        const { vendedor_id, instancia_id } = req.query;
+        await pool.query('DELETE FROM vendedor_instancia WHERE vendedor_id = $1 AND instancia_id = $2', [vendedor_id, instancia_id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Listar instâncias do vendedor
+app.get('/api/vendedor-instancia/:vendedor_id', auth, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT wi.*, vi.id as associacao_id FROM whatsapp_instancias wi INNER JOIN vendedor_instancia vi ON wi.id = vi.instancia_id WHERE vi.vendedor_id = $1 AND wi.ativo = true',
+            [req.params.vendedor_id]
+        );
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ENVIAR MENSAGEM COM INSTÂNCIA ESPECÍFICA
+app.post('/api/whatsapp/enviar-instancia', auth, async (req, res) => {
+    try {
+        const { telefone, mensagem, lead_id, vendedor_id, nome_contato, instancia_id } = req.body;
+        if (!telefone || !mensagem || !instancia_id) return res.status(400).json({ error: 'Telefone, mensagem e instancia_id obrigatórios' });
+        
+        const instResult = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1 AND ativo = true', [instancia_id]);
+        if (instResult.rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+        
+        const inst = instResult.rows[0];
+        let tel = telefone;
+        if (!tel.includes("@") && !tel.includes("-group") && tel.length <= 15) {
+            tel = tel.replace(/\D/g, "");
+            if (tel.length > 0 && tel.substring(0,2) !== "55") tel = "55" + tel;
+        }
+        
+        const fetch = require('node-fetch');
+        const response = await fetch('https://api.z-api.io/instances/' + inst.instance_id + '/token/' + inst.token + '/send-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Client-Token': inst.client_token || '' },
+            body: JSON.stringify({ phone: tel, message: mensagem })
+        });
+        
+        const result = await response.json();
+        console.log('Envio via instância ' + inst.nome + ':', result);
+        
+        if (result.zapiId || result.messageId) {
+            await pool.query(
+                "INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, instancia_id) VALUES ($1, $2, $3, $4, 'text', 'enviada', $5, $6, 'enviada', $7)",
+                [result.zapiId || result.messageId, tel, nome_contato || "", mensagem, lead_id || null, vendedor_id || null, instancia_id]
+            );
+            if (lead_id) { await pool.query("UPDATE clientes_finais SET ultima_interacao = NOW() WHERE id = $1", [lead_id]); }
+            res.json({ success: true, messageId: result.zapiId || result.messageId, instancia: inst.nome });
+        } else {
+            res.status(400).json({ error: 'Erro ao enviar', details: result });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// CONVERSAS FILTRADAS POR PERFIL E INSTÂNCIA
+app.get('/api/whatsapp/conversas-multi', auth, async (req, res) => {
+    try {
+        const { vendedor_id, instancia_id, perfil } = req.query;
+        let query = "SELECT * FROM (SELECT DISTINCT ON (telefone, instancia_id) telefone, COALESCE((SELECT m3.nome_contato FROM whatsapp_mensagens m3 WHERE m3.telefone = m.telefone AND m3.nome_contato IS NOT NULL AND m3.nome_contato != '' ORDER BY m3.id DESC LIMIT 1), m.nome_contato) as nome_contato, mensagem, created_at, lead_id, vendedor_id, direcao, is_grupo, nome_grupo, instancia_id, (SELECT COUNT(*) FROM whatsapp_mensagens m2 WHERE m2.telefone = m.telefone AND m2.lida = false AND m2.direcao = 'recebida') as nao_lidas, (SELECT wi.nome FROM whatsapp_instancias wi WHERE wi.id = m.instancia_id) as instancia_nome FROM whatsapp_mensagens m WHERE 1=1";
+        const params = [];
+        if (perfil !== 'admin' && vendedor_id) {
+            params.push(vendedor_id);
+            query += " AND (m.vendedor_id = $" + params.length + " OR m.instancia_id IN (SELECT instancia_id FROM vendedor_instancia WHERE vendedor_id = $" + params.length + "))";
+        }
+        if (instancia_id) {
+            params.push(instancia_id);
+            query += " AND m.instancia_id = $" + params.length;
+        }
+        query += ' ORDER BY telefone, instancia_id, created_at DESC) sub ORDER BY created_at DESC';
+        const result = await pool.query(query, params);
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao buscar conversas' });
+    }
+});
+
+// WEBHOOK MULTI-INSTÂNCIA
+app.post('/api/webhook/whatsapp/:instancia_id', async (req, res) => {
+    try {
+        const { instancia_id } = req.params;
+        const data = req.body;
+        console.log('Webhook Instância ' + instancia_id + ':', JSON.stringify(data).substring(0, 300));
+        
+        const instResult = await pool.query('SELECT id FROM whatsapp_instancias WHERE id = $1', [instancia_id]);
+        const instanciaIdReal = instResult.rows.length > 0 ? instResult.rows[0].id : null;
+        
+        if (data.type === "MessageStatusCallback" && data.ids) {
+            for (const msgId of data.ids) {
+                await pool.query("UPDATE whatsapp_mensagens SET status = $1 WHERE message_id = $2", [data.status, msgId]);
+            }
+            return res.status(200).json({ success: true });
+        }
+        
+        if (!data.phone) return res.status(200).json({ success: true });
+        
+        let telefone = data.phone;
+        if (!telefone.includes("@lid")) telefone = telefone.replace(/\D/g, "");
+        
+        const messageId = data.messageId || Date.now().toString();
+        const isGrupo = data.isGroup || false;
+        const fromMe = data.fromMe || false;
+        
+        let tipo = 'text', mensagem = '', arquivoUrl = null;
+        if (data.text) { tipo = 'text'; mensagem = data.text.message || data.text; }
+        else if (data.image) { tipo = 'image'; mensagem = data.image.caption || '[Imagem]'; arquivoUrl = data.image.imageUrl; }
+        else if (data.audio) { tipo = 'audio'; mensagem = '[Áudio]'; arquivoUrl = data.audio.audioUrl; }
+        else if (data.document) { tipo = 'document'; mensagem = '[Documento]'; arquivoUrl = data.document.documentUrl; }
+        else if (data.video) { tipo = 'video'; mensagem = '[Vídeo]'; arquivoUrl = data.video.videoUrl; }
+        else { return res.status(200).json({ success: true }); }
+        
+        const nomeContato = data.senderName || data.chatName || '';
+        
+        let leadId = null, vendedorId = null;
+        if (!isGrupo && telefone.length >= 8) {
+            const leadResult = await pool.query("SELECT id, vendedor_id FROM clientes_finais WHERE telefone LIKE $1 OR whatsapp LIKE $1 LIMIT 1", ["%" + telefone.slice(-8) + "%"]);
+            if (leadResult.rows.length > 0) { leadId = leadResult.rows[0].id; vendedorId = leadResult.rows[0].vendedor_id; }
+        }
+        
+        await pool.query(
+            "INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, is_grupo, arquivo_url, status, instancia_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (message_id) DO UPDATE SET status = EXCLUDED.status",
+            [messageId, telefone, nomeContato, mensagem, tipo, fromMe ? 'enviada' : 'recebida', leadId, vendedorId, isGrupo, arquivoUrl, 'RECEIVED', instanciaIdReal]
+        );
+        
+        res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('Erro webhook multi:', error);
+        res.status(200).json({ success: true });
+    }
+});
+
+// STATUS DE TODAS AS INSTÂNCIAS
+app.get('/api/whatsapp/instancias-status', auth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM whatsapp_instancias WHERE ativo = true ORDER BY id');
+        const fetch = require('node-fetch');
+        const statusPromises = result.rows.map(async (inst) => {
+            try {
+                const response = await fetch('https://api.z-api.io/instances/' + inst.instance_id + '/token/' + inst.token + '/status', { headers: { 'Client-Token': inst.client_token || '' } });
+                const data = await response.json();
+                return { ...inst, connected: data.connected };
+            } catch (e) { return { ...inst, connected: false }; }
+        });
+        res.json(await Promise.all(statusPromises));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== FIM SISTEMA MULTI-INSTANCIA ====================

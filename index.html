@@ -265,7 +265,7 @@
             const deleteCliente = async (id) => { if (!confirm('Tem certeza que deseja INATIVAR este cliente?')) return; await api.from('clientes').delete(id); await loadData(); showToast('Cliente inativado!'); };
             
             const addContato = async (form) => { 
-                await api.from('clientes_finais').insert([{...form, status: 'novo', ultima_interacao: new Date().toISOString()}]); 
+                const vendedorDoUsuario = data.vendedores.find(v => v.usuario_id === usuarioLogado.id); await api.from('clientes_finais').insert([{...form, status: 'novo', ultima_interacao: new Date().toISOString(), vendedor_id: vendedorDoUsuario ? vendedorDoUsuario.id : null}]); 
                 await loadData(); 
                 setShowModal(null); 
                 showToast('Lead adicionado!'); 
@@ -1047,8 +1047,6 @@
             const [instanciaSelecionada, setInstanciaSelecionada] = React.useState(null);
             const [showAddInstancia, setShowAddInstancia] = React.useState(false);
             const [novaInstancia, setNovaInstancia] = React.useState({ nome: "", instance_id: "", token: "", client_token: "" });
-            const [instanciaEnvio, setInstanciaEnvio] = React.useState(null);
-            const [filtroInstancia, setFiltroInstancia] = React.useState(null);
 
             const carregarInstancias = async () => {
                 try {
@@ -1164,9 +1162,6 @@
             const [mediaRecorder, setMediaRecorder] = React.useState(null);
             const [tempoGravacao, setTempoGravacao] = React.useState(0);
             const [previaUrl, setPreviaUrl] = React.useState(null);
-            const [menuMensagemId, setMenuMensagemId] = React.useState(null);
-            const [mensagemParaResponder, setMensagemParaResponder] = React.useState(null);
-            const [showEmojis, setShowEmojis] = React.useState(null);
             const messagesEndRef = React.useRef(null);
             
             
@@ -1195,7 +1190,7 @@
             
             const carregarConversas = async () => {
                 try {
-                    let url = "/api/whatsapp/conversas-multi?perfil=" + (isAdmin ? "admin" : "vendedor");
+                    let url = "/api/whatsapp/conversas";
                     let vendedorIdParaBuscar = usuarioLogado.vendedor_id;
                     
                     // Se não é admin e não tem vendedor_id, tentar buscar
@@ -1209,7 +1204,7 @@
                     }
                     
                     if (!isAdmin && vendedorIdParaBuscar) {
-                        url += "&vendedor_id=" + vendedorIdParaBuscar; if (filtroInstancia) url += "&instancia_id=" + filtroInstancia;
+                        url += "?vendedor_id=" + vendedorIdParaBuscar;
                     }
                     console.log("Buscando conversas:", url);
                     const res = await fetch(url, { headers });
@@ -1259,14 +1254,14 @@
                 if (!novaMensagem.trim() || !conversaSelecionada) return;
                 setEnviando(true);
                 try {
-                    const res = await fetch(instanciaEnvio ? "/api/whatsapp/enviar-instancia" : "/api/whatsapp/enviar", {
+                    const res = await fetch("/api/whatsapp/enviar", {
                         method: "POST",
                         headers,
                         body: JSON.stringify({
                             telefone: conversaSelecionada.telefone, nome_contato: conversaSelecionada.nome_contato,
                             mensagem: novaMensagem,
                             lead_id: conversaSelecionada.lead_id,
-                            vendedor_id: usuarioLogado.vendedor_id, instancia_id: instanciaEnvio || null
+                            vendedor_id: usuarioLogado.vendedor_id || null
                         })
                     });
                     const data = await res.json();
@@ -1289,45 +1284,6 @@
                     }
                 } catch (e) { showToast("Erro ao enviar"); }
                 setEnviando(false);
-            };
-
-            const apagarMensagem = async (mensagem) => {
-                if (!confirm("Apagar esta mensagem para todos?")) return;
-                try {
-                    const res = await fetch("/api/whatsapp/mensagem?messageId=" + mensagem.message_id + "&phone=" + conversaSelecionada.telefone, { method: "DELETE", headers });
-                    if (res.ok) { showToast("Mensagem apagada!"); carregarMensagens(conversaSelecionada.telefone, true); }
-                    else { showToast("Erro ao apagar"); }
-                } catch (e) { showToast("Erro ao apagar"); }
-                setMenuMensagemId(null);
-            };
-
-            const reagirMensagem = async (mensagem, emoji) => {
-                try {
-                    const res = await fetch("/api/whatsapp/reagir", { method: "POST", headers, body: JSON.stringify({ phone: conversaSelecionada.telefone, messageId: mensagem.message_id, emoji }) });
-                    if (res.ok) { showToast("Reação enviada!"); }
-                    else { showToast("Erro ao reagir"); }
-                } catch (e) { showToast("Erro ao reagir"); }
-                setShowEmojis(null); setMenuMensagemId(null);
-            };
-
-            const responderMensagem = async () => {
-                if (!novaMensagem.trim() || !mensagemParaResponder) return;
-                setEnviando(true);
-                try {
-                    const res = await fetch("/api/whatsapp/responder", { method: "POST", headers, body: JSON.stringify({ telefone: conversaSelecionada.telefone, mensagem: novaMensagem, quotedMessageId: mensagemParaResponder.message_id, lead_id: conversaSelecionada.lead_id, vendedor_id: usuarioLogado.vendedor_id, instancia_id: instanciaEnvio, nome_contato: conversaSelecionada.nome_contato }) });
-                    if (res.ok) { setNovaMensagem(""); setMensagemParaResponder(null); carregarMensagens(conversaSelecionada.telefone, true); showToast("Resposta enviada!"); }
-                    else { showToast("Erro ao responder"); }
-                } catch (e) { showToast("Erro ao responder"); }
-                setEnviando(false);
-            };
-
-            const fixarMensagem = async (mensagem) => {
-                try {
-                    const res = await fetch("/api/whatsapp/fixar", { method: "POST", headers, body: JSON.stringify({ phone: conversaSelecionada.telefone, messageId: mensagem.message_id }) });
-                    if (res.ok) { showToast("Mensagem fixada!"); carregarMensagens(conversaSelecionada.telefone, true); }
-                    else { showToast("Erro ao fixar"); }
-                } catch (e) { showToast("Erro ao fixar"); }
-                setMenuMensagemId(null);
             };
 
             const selecionarArquivo = (file) => {
@@ -1423,7 +1379,7 @@
                             body = { telefone: conversaSelecionada.telefone, nome_contato: conversaSelecionada.nome_contato, imageUrl: uploadData.url, caption: legenda };
                         } else if (uploadData.type.startsWith("video/")) {
                             endpoint = "/api/whatsapp/enviar-video";
-                            body = { telefone: conversaSelecionada.telefone, nome_contato: conversaSelecionada.nome_contato, videoUrl: uploadData.url, caption: legenda, lead_id: conversaSelecionada.lead_id, vendedor_id: usuarioLogado.vendedor_id, instancia_id: instanciaEnvio };
+                            body = { telefone: conversaSelecionada.telefone, nome_contato: conversaSelecionada.nome_contato, videoUrl: uploadData.url, caption: legenda, lead_id: conversaSelecionada.lead_id, vendedor_id: usuarioLogado.vendedor_id };
                         } else if (uploadData.type.startsWith("audio/")) {
                             endpoint = "/api/whatsapp/enviar-audio";
                             body = { telefone: conversaSelecionada.telefone, nome_contato: conversaSelecionada.nome_contato, audioUrl: uploadData.url };
@@ -1518,17 +1474,7 @@
                         React.createElement("button", {
                             onClick: function() { setFiltroConversa("grupos"); },
                             className: "px-3 py-1 rounded-full text-xs font-medium " + (filtroConversa === "grupos" ? "bg-green-500 text-white" : "bg-gray-200 text-gray-700 hover:bg-gray-300")
-                        }, "Grupos"),
-                        instancias.length > 1 && React.createElement("select", {
-                            value: filtroInstancia || "",
-                            onChange: function(e) { setFiltroInstancia(e.target.value ? parseInt(e.target.value) : null); },
-                            className: "px-2 py-1 rounded-lg text-xs border bg-white"
-                        },
-                            React.createElement("option", { value: "" }, "Todos números"),
-                            instancias.map(function(inst) {
-                                return React.createElement("option", { key: inst.id, value: inst.id }, inst.nome);
-                            })
-                        )
+                        }, "Grupos")
                     ),
                     React.createElement("div", { className: "p-2 border-b" },
                         React.createElement("button", {
@@ -1540,8 +1486,8 @@
                         conversas.length === 0 && React.createElement("div", { className: "p-4 text-center text-gray-500" }, "Nenhuma conversa ainda"),
                         conversas.filter(function(c) { 
                             var matchBusca = buscaContato === "" || (c.nome_contato && c.nome_contato.toLowerCase().includes(buscaContato.toLowerCase())) || (c.telefone && c.telefone.includes(buscaContato));
-                            var matchFiltro = filtroConversa === "todas" || (filtroConversa === "nao_lidas" && c.nao_lidas > 0) || (filtroConversa === "grupos" && c.is_grupo); var matchInstancia = !filtroInstancia || c.instancia_id === filtroInstancia;
-                            return matchBusca && matchFiltro && matchInstancia;
+                            var matchFiltro = filtroConversa === "todas" || (filtroConversa === "nao_lidas" && c.nao_lidas > 0) || (filtroConversa === "grupos" && c.is_grupo);
+                            return matchBusca && matchFiltro;
                         }).map(function(c) {
                             return React.createElement("div", {
                                 key: c.telefone,
@@ -1550,10 +1496,7 @@
                             },
                                 React.createElement("div", { className: "flex justify-between items-start" },
                                     React.createElement("div", { className: "flex-1" },
-                                        React.createElement("div", { className: "flex items-center gap-2" },
-                                            React.createElement("h3", { className: "font-semibold text-gray-800" }, c.is_grupo ? "👥 " + (c.nome_grupo || "Grupo") : (c.nome_contato || formatarTelefone(c.telefone))),
-                                            c.instancia_nome && React.createElement("span", { className: "text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700" }, c.instancia_nome)
-                                        ),
+                                        React.createElement("h3", { className: "font-semibold text-gray-800" }, c.is_grupo ? "👥 " + (c.nome_grupo || "Grupo") : (c.nome_contato || formatarTelefone(c.telefone))),
                                         React.createElement("p", { className: "text-xs text-gray-400" }, !c.is_grupo && c.telefone ? formatarTelefone(c.telefone) : ""), React.createElement("p", { className: "text-sm text-gray-500 truncate" }, c.mensagem ? c.mensagem.substring(0, 40) + (c.mensagem.length > 40 ? "..." : "") : "")
                                     ),
                                     React.createElement("div", { className: "text-right" },
@@ -1645,7 +1588,7 @@
                                     className: "flex " + (isEnviada ? "justify-end" : "justify-start")
                                 },
                                     React.createElement("div", {
-                                        className: "max-w-[70%] p-3 rounded-lg shadow relative group " + (isEnviada ? "bg-green-100 rounded-br-none" : "bg-white rounded-bl-none")
+                                        className: "max-w-[70%] p-3 rounded-lg shadow " + (isEnviada ? "bg-green-100 rounded-br-none" : "bg-white rounded-bl-none")
                                     },
                                         m.nome_remetente && React.createElement("p", { className: "text-xs font-semibold mb-1 " + (isEnviada ? "text-green-700" : "text-blue-600") }, m.nome_remetente),
                                         m.tipo === "image" && m.arquivo_url ? React.createElement("div", null, React.createElement("img", { src: m.arquivo_url, className: "max-w-full rounded-lg mb-1 cursor-pointer", style: { maxHeight: "200px" }, onClick: function() { window.open(m.arquivo_url, "_blank"); } }), m.mensagem && m.mensagem !== "[Imagem]" && React.createElement("p", { className: "text-gray-800 mt-1" }, m.mensagem)) : m.tipo === "audio" && m.arquivo_url ? React.createElement("audio", { controls: true, className: "max-w-full" }, React.createElement("source", { src: m.arquivo_url, type: "audio/ogg" })) : m.tipo === "video" && m.arquivo_url ? React.createElement("video", { controls: true, className: "max-w-full rounded-lg", style: { maxHeight: "200px" } }, React.createElement("source", { src: m.arquivo_url })) : m.tipo === "document" && m.arquivo_url ? React.createElement("a", { href: m.arquivo_url, target: "_blank", className: "flex items-center gap-2 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-all" }, React.createElement("span", { className: "text-3xl" }, "📄"), React.createElement("div", null, React.createElement("p", { className: "font-medium text-gray-800" }, m.arquivo_nome || "Documento"), React.createElement("p", { className: "text-xs text-gray-500" }, "Clique para abrir"))) : React.createElement("p", { className: "text-gray-800 whitespace-pre-wrap" }, m.mensagem),
@@ -1659,20 +1602,6 @@
                             React.createElement("div", { ref: messagesEndRef })
                         ),
                         // Input de mensagem
-                        // Seletor de instância
-                        instancias.length > 1 && React.createElement("div", { className: "px-4 py-2 bg-gray-50 border-t flex items-center gap-2" },
-                            React.createElement("span", { className: "text-sm text-gray-600" }, "Enviar de:"),
-                            React.createElement("select", {
-                                value: instanciaEnvio || "",
-                                onChange: function(e) { setInstanciaEnvio(e.target.value ? parseInt(e.target.value) : null); },
-                                className: "px-3 py-1 border rounded-lg text-sm bg-white"
-                            },
-                                React.createElement("option", { value: "" }, "Padrão"),
-                                instancias.map(function(inst) {
-                                    return React.createElement("option", { key: inst.id, value: inst.id }, inst.nome + (inst.telefone ? " (" + inst.telefone + ")" : ""));
-                                })
-                            )
-                        ),
                         React.createElement("div", { className: "p-4 bg-white border-t" },
                             React.createElement("div", { className: "flex gap-2" },
                                 React.createElement("div", { className: "relative" },

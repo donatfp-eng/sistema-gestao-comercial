@@ -2487,3 +2487,128 @@ app.get('/api/whatsapp/instancias/:id/status-auto', auth, async (req, res) => {
         res.json({ connected, phone, status });
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
+
+// ==================== APAGAR MENSAGEM ====================
+app.delete('/api/whatsapp/mensagens/:messageId', auth, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { instancia_id } = req.query;
+        
+        const instResult = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1', [instancia_id || 2]);
+        if (instResult.rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+        const instancia = instResult.rows[0];
+        
+        const fetch = require('node-fetch');
+        
+        if (instancia.tipo_api === 'wasender') {
+            const response = await fetch('https://www.wasenderapi.com/api/messages/' + messageId, {
+                method: 'DELETE',
+                headers: { 'Authorization': 'Bearer ' + instancia.token }
+            });
+            const result = await response.json();
+            console.log('WasenderAPI Apagar:', result);
+            
+            if (result.success || response.ok) {
+                await pool.query("UPDATE whatsapp_mensagens SET status = 'apagada', mensagem = '[Mensagem apagada]' WHERE message_id = $1", [messageId]);
+                return res.json({ success: true });
+            }
+            return res.status(400).json({ error: result.message || 'Erro ao apagar' });
+        } else {
+            const response = await fetch('https://api.z-api.io/instances/' + instancia.instance_id + '/token/' + instancia.token + '/messages/' + messageId, {
+                method: 'DELETE',
+                headers: { 'Client-Token': instancia.client_token || '' }
+            });
+            const result = await response.json();
+            if (result.success || response.ok) {
+                await pool.query("UPDATE whatsapp_mensagens SET status = 'apagada', mensagem = '[Mensagem apagada]' WHERE message_id = $1", [messageId]);
+                return res.json({ success: true });
+            }
+            return res.status(400).json({ error: result.message || 'Erro ao apagar' });
+        }
+    } catch (error) { console.error('Erro ao apagar:', error); res.status(500).json({ error: error.message }); }
+});
+
+// ==================== EDITAR MENSAGEM ====================
+app.put('/api/whatsapp/mensagens/:messageId', auth, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { text, instancia_id } = req.body;
+        
+        if (!text) return res.status(400).json({ error: 'Texto é obrigatório' });
+        
+        const instResult = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1', [instancia_id || 2]);
+        if (instResult.rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+        const instancia = instResult.rows[0];
+        
+        if (instancia.tipo_api === 'wasender') {
+            const fetch = require('node-fetch');
+            const response = await fetch('https://www.wasenderapi.com/api/messages/' + messageId, {
+                method: 'PUT',
+                headers: { 'Authorization': 'Bearer ' + instancia.token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: text })
+            });
+            const result = await response.json();
+            console.log('WasenderAPI Editar:', result);
+            
+            if (result.success || response.ok) {
+                await pool.query("UPDATE whatsapp_mensagens SET mensagem = $1 WHERE message_id = $2", [text, messageId]);
+                return res.json({ success: true });
+            }
+            return res.status(400).json({ error: result.message || 'Erro ao editar' });
+        } else {
+            return res.status(400).json({ error: 'Edição não suportada pela Z-API' });
+        }
+    } catch (error) { console.error('Erro ao editar:', error); res.status(500).json({ error: error.message }); }
+});
+
+// ==================== RESPONDER MENSAGEM (CITAÇÃO) ====================
+app.post('/api/whatsapp/responder', auth, async (req, res) => {
+    try {
+        const { telefone, mensagem, quotedMessageId, instancia_id, lead_id, vendedor_id, nome_contato } = req.body;
+        
+        if (!telefone || !mensagem || !quotedMessageId) {
+            return res.status(400).json({ error: 'Telefone, mensagem e quotedMessageId são obrigatórios' });
+        }
+        
+        const tel = telefone.replace(/\D/g, '');
+        const usedInstanciaId = instancia_id || 2;
+        
+        const instResult = await pool.query('SELECT * FROM whatsapp_instancias WHERE id = $1', [usedInstanciaId]);
+        if (instResult.rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+        const instancia = instResult.rows[0];
+        
+        const fetch = require('node-fetch');
+        let result;
+        
+        if (instancia.tipo_api === 'wasender') {
+            console.log('>>> RESPONDENDO VIA WASENDERAPI');
+            const response = await fetch('https://www.wasenderapi.com/api/send-message', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + instancia.token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ to: tel, text: mensagem, quotedMessageId: quotedMessageId })
+            });
+            result = await response.json();
+            console.log('Resposta WasenderAPI Responder:', JSON.stringify(result));
+            result.messageId = result.data && result.data.msgId ? ('wasender_' + result.data.msgId) : ('wasender_' + Date.now());
+        } else {
+            console.log('>>> RESPONDENDO VIA Z-API');
+            const response = await fetch('https://api.z-api.io/instances/' + instancia.instance_id + '/token/' + instancia.token + '/send-text', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Client-Token': instancia.client_token || '' },
+                body: JSON.stringify({ phone: tel, message: mensagem, messageId: quotedMessageId })
+            });
+            result = await response.json();
+            result.messageId = result.zapiId || result.messageId;
+        }
+        
+        if (result.messageId || result.success) {
+            await pool.query(
+                "INSERT INTO whatsapp_mensagens (message_id, telefone, nome_contato, mensagem, tipo, direcao, lead_id, vendedor_id, status, instancia_id) VALUES ($1, $2, $3, $4, 'text', 'enviada', $5, $6, 'enviada', $7)",
+                [result.messageId, tel, nome_contato || "", mensagem, lead_id, vendedor_id, usedInstanciaId]
+            );
+            res.json({ success: true, messageId: result.messageId });
+        } else {
+            res.status(400).json({ error: result.message || 'Erro ao responder' });
+        }
+    } catch (error) { console.error('Erro ao responder:', error); res.status(500).json({ error: error.message }); }
+});

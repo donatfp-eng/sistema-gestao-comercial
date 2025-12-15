@@ -1153,7 +1153,7 @@
             const [mensagens, setMensagens] = React.useState([]);
             const [novaMensagem, setNovaMensagem] = React.useState("");
             const [loading, setLoading] = React.useState(false);
-            const [enviando, setEnviando] = React.useState(false); const [instanciaEnvio, setInstanciaEnvio] = React.useState(1);
+            const [enviando, setEnviando] = React.useState(false); const [instanciaEnvio, setInstanciaEnvio] = React.useState(2);
             const [arquivoPrevia, setArquivoPrevia] = React.useState(null);
             const [legendaArquivo, setLegendaArquivo] = React.useState("");
             const [gravando, setGravando] = React.useState(false);
@@ -1163,6 +1163,7 @@
             const [tempoGravacao, setTempoGravacao] = React.useState(0);
             const [previaUrl, setPreviaUrl] = React.useState(null);
             const messagesEndRef = React.useRef(null);
+            const [mensagemResposta, setMensagemResposta] = React.useState(null);
             
             
             // Verificar se tem lead para abrir chat
@@ -1249,6 +1250,39 @@
                 setConversaSelecionada(conversa);
                 carregarMensagens(conversa.telefone);
             };
+
+            const apagarMensagem = async (messageId) => {
+                try {
+                    const res = await fetch("/api/whatsapp/mensagens/" + messageId + "?instancia_id=" + (instanciaEnvio || 2), {
+                        method: "DELETE",
+                        headers
+                    });
+                    if (res.ok) {
+                        showToast("Mensagem apagada!");
+                        carregarMensagens(conversaSelecionada.telefone, true);
+                    } else {
+                        const data = await res.json();
+                        showToast("Erro: " + (data.error || "Falha ao apagar"));
+                    }
+                } catch (e) { showToast("Erro ao apagar mensagem"); }
+            };
+
+            const editarMensagem = async (messageId, novoTexto) => {
+                try {
+                    const res = await fetch("/api/whatsapp/mensagens/" + messageId, {
+                        method: "PUT",
+                        headers,
+                        body: JSON.stringify({ text: novoTexto, instancia_id: instanciaEnvio || 2 })
+                    });
+                    if (res.ok) {
+                        showToast("Mensagem editada!");
+                        carregarMensagens(conversaSelecionada.telefone, true);
+                    } else {
+                        const data = await res.json();
+                        showToast("Erro: " + (data.error || "Falha ao editar"));
+                    }
+                } catch (e) { showToast("Erro ao editar mensagem"); }
+            };
             
             const enviarMensagem = async () => {
                 if (!novaMensagem.trim() || !conversaSelecionada) return;
@@ -1261,11 +1295,11 @@
                             telefone: conversaSelecionada.telefone, nome_contato: conversaSelecionada.nome_contato,
                             mensagem: novaMensagem,
                             lead_id: conversaSelecionada.lead_id,
-                            vendedor_id: usuarioLogado.vendedor_id || null, instancia_id: instanciaEnvio || 1 })
+                            vendedor_id: usuarioLogado.vendedor_id || null, instancia_id: instanciaEnvio || 2, quotedMessageId: mensagemResposta ? (mensagemResposta.message_id || mensagemResposta.id) : null })
                     });
                     const data = await res.json();
                     if (res.ok && data.success) {
-                        setNovaMensagem("");
+                        setNovaMensagem(""); setMensagemResposta(null);
                         carregarMensagens(conversaSelecionada.telefone, true);
                         showToast("Mensagem enviada!");
                         if (veioDeWorkspace && conversaSelecionada.lead_id) {
@@ -1582,23 +1616,43 @@
                             loading && mensagens.length === 0 && React.createElement("div", { className: "text-center text-gray-500" }, "Carregando..."),
                             mensagens.map(function(m) {
                                 const isEnviada = m.direcao === "enviada";
+                                const msgId = m.message_id || m.id;
                                 return React.createElement("div", {
                                     key: m.id,
-                                    className: "flex " + (isEnviada ? "justify-end" : "justify-start")
+                                    className: "flex group " + (isEnviada ? "justify-end" : "justify-start")
                                 },
-                                    React.createElement("div", {
-                                        className: "max-w-[70%] p-3 rounded-lg shadow " + (isEnviada ? "bg-green-100 rounded-br-none" : "bg-white rounded-bl-none")
-                                    },
-                                        m.nome_remetente && React.createElement("p", { className: "text-xs font-semibold mb-1 " + (isEnviada ? "text-green-700" : "text-blue-600") }, m.nome_remetente),
-                                        m.tipo === "image" && m.arquivo_url ? React.createElement("div", null, React.createElement("img", { src: m.arquivo_url, className: "max-w-full rounded-lg mb-1 cursor-pointer", style: { maxHeight: "200px" }, onClick: function() { window.open(m.arquivo_url, "_blank"); } }), m.mensagem && m.mensagem !== "[Imagem]" && React.createElement("p", { className: "text-gray-800 mt-1" }, m.mensagem)) : m.tipo === "audio" && m.arquivo_url ? React.createElement("audio", { controls: true, className: "max-w-full" }, React.createElement("source", { src: m.arquivo_url, type: "audio/ogg" })) : m.tipo === "video" && m.arquivo_url ? React.createElement("video", { controls: true, className: "max-w-full rounded-lg", style: { maxHeight: "200px" } }, React.createElement("source", { src: m.arquivo_url })) : m.tipo === "document" && m.arquivo_url ? React.createElement("a", { href: m.arquivo_url, target: "_blank", className: "flex items-center gap-2 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-all" }, React.createElement("span", { className: "text-3xl" }, "📄"), React.createElement("div", null, React.createElement("p", { className: "font-medium text-gray-800" }, m.arquivo_nome || "Documento"), React.createElement("p", { className: "text-xs text-gray-500" }, "Clique para abrir"))) : React.createElement("p", { className: "text-gray-800 whitespace-pre-wrap" }, m.mensagem),
-                                        React.createElement("p", { className: "text-xs text-gray-400 mt-1 text-right" },
-                                            formatarData(m.created_at),
-                                            isEnviada && React.createElement("span", { className: m.status === "lida" || m.status === "READ" ? "text-blue-500" : "text-gray-400" }, m.status === "lida" || m.status === "READ" ? " ✓✓" : m.status === "entregue" || m.status === "DELIVERED" || m.status === "RECEIVED" ? " ✓✓" : " ✓")
+                                    React.createElement("div", { className: "relative max-w-[70%]" },
+                                        // Botões de ação (aparecem no hover)
+                                        React.createElement("div", {
+                                            className: "absolute top-1 " + (isEnviada ? "left-0 -translate-x-full pr-2" : "right-0 translate-x-full pl-2") + " opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 z-10"
+                                        },
+                                            React.createElement("button", { onClick: function() { setMensagemResposta(m); }, className: "p-1.5 bg-white rounded-full shadow hover:bg-gray-100 text-sm", title: "Responder" }, "↩️"),
+                                            isEnviada && m.tipo === "text" && React.createElement("button", { onClick: function() { var novoTexto = prompt("Editar mensagem:", m.mensagem); if (novoTexto && novoTexto !== m.mensagem) editarMensagem(msgId, novoTexto); }, className: "p-1.5 bg-white rounded-full shadow hover:bg-gray-100 text-sm", title: "Editar" }, "✏️"),
+                                            isEnviada && React.createElement("button", { onClick: function() { if (confirm("Apagar esta mensagem?")) apagarMensagem(msgId); }, className: "p-1.5 bg-white rounded-full shadow hover:bg-gray-100 text-sm", title: "Apagar" }, "🗑️")
+                                        ),
+                                        // Conteúdo da mensagem
+                                        React.createElement("div", {
+                                            className: "p-3 rounded-lg shadow " + (isEnviada ? "bg-green-100 rounded-br-none" : "bg-white rounded-bl-none")
+                                        },
+                                            m.nome_remetente && React.createElement("p", { className: "text-xs font-semibold mb-1 " + (isEnviada ? "text-green-700" : "text-blue-600") }, m.nome_remetente),
+                                            m.tipo === "image" && m.arquivo_url ? React.createElement("div", null, React.createElement("img", { src: m.arquivo_url, className: "max-w-full rounded-lg mb-1 cursor-pointer", style: { maxHeight: "200px" }, onClick: function() { window.open(m.arquivo_url, "_blank"); } }), m.mensagem && m.mensagem !== "[Imagem]" && React.createElement("p", { className: "text-gray-800 mt-1" }, m.mensagem)) : m.tipo === "audio" && m.arquivo_url ? React.createElement("audio", { controls: true, className: "max-w-full" }, React.createElement("source", { src: m.arquivo_url, type: "audio/ogg" })) : m.tipo === "video" && m.arquivo_url ? React.createElement("video", { controls: true, className: "max-w-full rounded-lg", style: { maxHeight: "200px" } }, React.createElement("source", { src: m.arquivo_url })) : m.tipo === "document" && m.arquivo_url ? React.createElement("a", { href: m.arquivo_url, target: "_blank", className: "flex items-center gap-2 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-all" }, React.createElement("span", { className: "text-3xl" }, "📄"), React.createElement("div", null, React.createElement("p", { className: "font-medium text-gray-800" }, m.arquivo_nome || "Documento"), React.createElement("p", { className: "text-xs text-gray-500" }, "Clique para abrir"))) : React.createElement("p", { className: "text-gray-800 whitespace-pre-wrap" }, m.mensagem),
+                                            React.createElement("p", { className: "text-xs text-gray-400 mt-1 text-right" },
+                                                formatarData(m.created_at),
+                                                isEnviada && React.createElement("span", { className: m.status === "lida" || m.status === "READ" ? "text-blue-500" : "text-gray-400" }, m.status === "lida" || m.status === "READ" ? " ✓✓" : m.status === "entregue" || m.status === "DELIVERED" || m.status === "RECEIVED" ? " ✓✓" : " ✓")
+                                            )
                                         )
                                     )
                                 );
                             }),
                             React.createElement("div", { ref: messagesEndRef })
+                        ),
+                        // Barra de resposta (quando responder mensagem)
+                        mensagemResposta && React.createElement("div", { className: "px-4 py-2 bg-gray-100 border-t flex items-center justify-between" },
+                            React.createElement("div", { className: "flex-1 border-l-4 border-green-500 pl-3" },
+                                React.createElement("p", { className: "text-xs text-green-600 font-semibold" }, "Respondendo a " + (mensagemResposta.direcao === "enviada" ? "você" : (mensagemResposta.nome_remetente || "contato"))),
+                                React.createElement("p", { className: "text-sm text-gray-600 truncate" }, mensagemResposta.mensagem || "[Mídia]")
+                            ),
+                            React.createElement("button", { onClick: function() { setMensagemResposta(null); }, className: "ml-2 text-gray-400 hover:text-gray-600 text-xl" }, "✕")
                         ),
                         // Input de mensagem
                         React.createElement("div", { className: "p-4 bg-white border-t" },
@@ -1626,7 +1680,7 @@
                                         )
                                     )
                                 ),
-                                React.createElement("select", { value: instanciaEnvio, onChange: function(e) { setInstanciaEnvio(parseInt(e.target.value)); }, className: "border rounded-lg px-2 py-2 text-sm bg-white", title: "Enviar por" }, React.createElement("option", { value: 1 }, "Principal"), React.createElement("option", { value: 2 }, "Vendas II")), React.createElement("textarea", { value: novaMensagem,
+                                React.createElement("select", { value: instanciaEnvio, onChange: function(e) { setInstanciaEnvio(parseInt(e.target.value)); }, className: "border rounded-lg px-2 py-2 text-sm bg-white", title: "Enviar por" }, React.createElement("option", { value: 2 }, "Vendas II")), React.createElement("textarea", { value: novaMensagem,
                                     onChange: function(e) { setNovaMensagem(e.target.value); },
                                     onKeyDown: function(e) { if (e.key === "Enter" && !e.shiftKey && !enviando) { e.preventDefault(); enviarMensagem(); } },
                                     placeholder: "Digite uma mensagem...",
